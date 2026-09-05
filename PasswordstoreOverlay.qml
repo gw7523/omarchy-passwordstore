@@ -1357,12 +1357,17 @@ Item {
 
   PanelWindow {
     id: panel
-    visible: root.opened
+    // Hide and drop the exclusive grab while a helper terminal is running
+    // (gpg --full-generate-key, pkg add, first git/rclone push). Otherwise
+    // the fullscreen layer eats keys and clicks meant for that terminal or
+    // for whatever app is behind the scrim.
+    visible: root.opened && root.setupBusy === ""
     anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
     WlrLayershell.namespace: "omarchy-passwordstore"
     WlrLayershell.layer: WlrLayer.Overlay
-    WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
+    WlrLayershell.keyboardFocus: (root.opened && root.setupBusy === "")
+      ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
     exclusionMode: ExclusionMode.Ignore
 
     Rectangle {
