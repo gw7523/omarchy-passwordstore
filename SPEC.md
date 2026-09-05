@@ -16,6 +16,9 @@ Add **setup** so a new Omarchy seat can:
 1. Create or load a GPG key, then `pass init`.
 2. Choose how the vault syncs: **local-only**, **git**, **rclone**, or **custom**.
 3. Use the vault (already implemented — do not regress it).
+4. **Multiple vaults** on one seat: e.g. a personal store and a shared
+   team store (shared GPG recipients), each with its own directory, keys,
+   and sync backend. Switch which vault the overlay searches.
 
 ## Identity
 
@@ -52,10 +55,24 @@ Offer to install `pass` (and optionally `pass-otp`, `git`, `rclone`, `gnupg`,
 Never generate a passphrase-less key automatically. Never pass the
 passphrase through QML.
 
-### 3. Init store
+### 3. Init store (per vault)
 
-`pass init <gpg-id>` with `PASSWORD_STORE_DIR` = setting `storeDir` or
-`~/.password-store`. If a store already exists, skip and show its path.
+`pass init <gpg-id...>` with `PASSWORD_STORE_DIR` = that vault's `storeDir`
+(default `~/.password-store` for the first vault). `pass init` already
+accepts **multiple GPG ids** — use that for a shared vault (encrypt to
+everyone's keys). If the directory already has `.gpg-id`, skip init and
+show the path.
+
+Each vault is a **separate directory** (separate `PASSWORD_STORE_DIR`),
+not a `pass init --path` subfolder. That way personal and shared can use
+different git remotes / rclone paths.
+
+Default layout suggestion (user can change):
+
+| Vault id | Label | Directory | Keys |
+|---|---|---|---|
+| `personal` | Personal | `~/.password-store` | the operator's key |
+| `shared` (optional) | Shared | `~/.password-store-shared` | operator + imported teammates (or a shared team key) |
 
 ### 4. Sync backend (required choice)
 
@@ -68,15 +85,57 @@ Setting key: `syncBackend` = `local` | `git` | `rclone` | `custom`.
 | **rclone** | Ask for remote path `remote:bucket/pass` (rclone must already be configured; do not put rclone tokens in the plugin). First `rclone sync` **from** remote if the store is empty, else **to** remote after confirm. | After mutate: `rclone copy`/`sync` store → remote (never delete-remote-by-default; prefer `rclone copy` or `sync` with a setting `rcloneMode` = copy\|sync, default **copy**). Open: optional pull (`rclone copy` remote → store) behind `rclonePullOnOpen` default true. |
 | **custom** | Two command strings, with `$STORE` expanded to the store dir, no other interpolation: `syncPushCmd`, `syncPullCmd`. Empty pull is ok. Run via `bash -lc` with cwd=$STORE. Document that secrets must not appear in the command. | Same as git: pull on open (if set), push after mutate. |
 
-Persist backend settings on the **bar widget** entry (same as `storeDir`) so
-`omarchy bar set` works.
+Persist backend settings **per vault** (not globals). Bar widget settings:
+
+- `vaults` — JSON array of vault objects (see below). `omarchy bar set`
+  with `--json` for the array.
+- `activeVaultId` — which vault the overlay lists.
+
+Vault object:
+
+```json
+{
+  "id": "personal",
+  "name": "Personal",
+  "storeDir": "~/.password-store",
+  "gpgIds": ["0xDEADBEEF"],
+  "syncBackend": "git",
+  "gitRemote": "git@github.com:me/pass-personal.git",
+  "rcloneRemote": "",
+  "rcloneMode": "copy",
+  "gitPullOnOpen": true,
+  "rclonePullOnOpen": true,
+  "syncPushCmd": "",
+  "syncPullCmd": ""
+}
+```
+
+Keep `storeDir` as a fallback when `vaults` is empty (migrates a single
+existing store into `vaults[0]` id=`personal` on first setup save).
 
 ### 5. Done
 
-Drop into the existing search overlay.
+Drop into the existing search overlay on the **active** vault.
 
-A **Settings** affordance (gear, or `Ctrl+,`) re-opens setup steps 2–4 without
-wiping the store.
+A **Settings** affordance (gear, or `Ctrl+,`) re-opens setup: add vault,
+edit vault, switch default, without wiping other stores.
+
+## Multiple vaults (access)
+
+- Overlay header: vault name; `Tab` / `Shift+Tab` (or a small dropdown)
+  cycles vaults. Search, recent, copy, edit, and sync apply **only** to
+  the active vault (`PASSWORD_STORE_DIR` in the helpers).
+- Bar tooltip: `Password Store · <active name>`.
+- **Add vault** from setup: name, directory, GPG (existing / generate /
+  import), then that vault's sync backend. Shared vault: pick **one or
+  more** GPG ids (import teammates' public keys first; or one shared
+  secret key imported on each machine — document both, prefer multiple
+  recipient ids).
+- **Remove vault** removes the plugin record only, never `rm` the
+  directory unless the user confirms a separate destructive action
+  (default: leave files).
+- Helpers take `--store DIR` (already on `passwordstore-list`). Thread
+  the active vault's dir through list/action/setup/sync.
 
 ## Search overlay (existing — extend, don’t rewrite)
 
@@ -104,8 +163,8 @@ Add (small):
 ## Files to add/touch
 
 - `manifest.json` — new id, version, extra barWidget schema keys
-  (`syncBackend`, `gitRemote`, `rcloneRemote`, `rcloneMode`,
-  `gitPullOnOpen`, `rclonePullOnOpen`, `syncPushCmd`, `syncPullCmd`).
+  (`vaults`, `activeVaultId`; per-vault sync fields live inside `vaults`).
+  Keep a legacy `storeDir` default for one-store installs.
 - `PasswordstoreOverlay.qml` / `PasswordstoreWidget.qml` — pluginId, setup
   pages.
 - `passwordstore-setup` — new helper: `status`, `gpg-list`, `init`,
