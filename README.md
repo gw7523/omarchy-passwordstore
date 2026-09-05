@@ -67,11 +67,12 @@ appears when it is installed. The setup card offers to install any of them.
 
 A keybinding is the natural way to reach it. In `~/.config/hypr/bindings.lua`.
 The toggle needs the `'{}'` payload (without it the overlay is a no-op).
-`SUPER+P` is Omarchy's pseudo-window toggle; this seat uses `SUPER+ALT+P`
-instead of stealing that:
+`SUPER+P` is Omarchy's pseudo-window toggle; this seat uses `SUPER+CTRL+P`
+(was Power; power is still on XF86PowerOff and the bar widget):
 
 ```lua
-o.bind("SUPER + ALT + P", "Password store", "omarchy-shell shell toggle io.github.gw7523.passwordstore '{}'")
+hl.unbind("SUPER + CTRL + P")
+o.bind("SUPER + CTRL + P", "Password store", "omarchy-shell shell toggle io.github.gw7523.passwordstore '{}'")
 ```
 
 The bar widget is still needed even if you only ever use the keybinding: its
