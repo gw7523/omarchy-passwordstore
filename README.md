@@ -12,7 +12,7 @@ wizard, the sync backends and the vaults are what this fork adds.
 
 ![Bar button and popup](preview.png)
 
-- A key on the bar. Click it (or `omarchy-shell shell toggle io.github.gw7523.passwordstore`
+- A key on the bar. Click it (or `omarchy-shell shell toggle io.github.gw7523.passwordstore '{}'`
   from a keybinding) and type to search your store; `ghb` finds
   `web/github.com`.
 - `Enter` copies the password, `Alt+U` the username, `Alt+O` a fresh OTP code
@@ -65,12 +65,13 @@ last two are part of Omarchy), `wtype` for the typing actions, `git` or
 `rclone` for those sync backends. `pass-otp` is optional; the OTP action only
 appears when it is installed. The setup card offers to install any of them.
 
-A keybinding is the natural way to reach it. In `~/.config/hypr/bindings.lua`
-(`SUPER+P` is Omarchy's pseudo-window toggle by default, hence the unbind):
+A keybinding is the natural way to reach it. In `~/.config/hypr/bindings.lua`.
+The toggle needs the `'{}'` payload (without it the overlay is a no-op).
+`SUPER+P` is Omarchy's pseudo-window toggle; this seat uses `SUPER+ALT+P`
+instead of stealing that:
 
 ```lua
-hl.unbind("SUPER + P")
-o.bind("SUPER + P", "Password store", "omarchy-shell shell toggle io.github.gw7523.passwordstore")
+o.bind("SUPER + ALT + P", "Password store", "omarchy-shell shell toggle io.github.gw7523.passwordstore '{}'")
 ```
 
 The bar widget is still needed even if you only ever use the keybinding: its
@@ -191,7 +192,7 @@ A vault record:
 ## How it works
 
 The plugin has two parts: an `overlay` (`PasswordstoreOverlay.qml`, the card,
-summoned with `omarchy-shell shell toggle io.github.gw7523.passwordstore`) and
+summoned with `omarchy-shell shell toggle io.github.gw7523.passwordstore '{}'`) and
 a `bar-widget` (`PasswordstoreWidget.qml`, the key on the bar, which also
 holds the settings). Three small scripts do the work, and all can be run by
 hand:

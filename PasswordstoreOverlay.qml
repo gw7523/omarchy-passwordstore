@@ -9,8 +9,8 @@ import qs.Ui
 
 // Centered type-to-search overlay for pass, the standard unix password
 // manager, styled like the Omarchy menu: same surface tokens, same card, same
-// rows. Summoned with `omarchy-shell shell toggle io.github.gw7523.passwordstore`,
-// from a keybinding or the bar button.
+// rows. Summoned with `omarchy-shell shell toggle io.github.gw7523.passwordstore '{}'`
+// from a keybinding or the bar button. Without the payload the toggle is a no-op.
 //
 // The overlay never sees a secret. passwordstore-list walks the store for the
 // names of the *.gpg files, and passwordstore-action hands a chosen entry to
@@ -581,12 +581,17 @@ Item {
   property string setupError: ""
   property string setupNote: ""
   property bool statusPending: false
+  // Non-status calls that arrived while the helper was busy. `status` is
+  // coalesced via statusPending; everything else must not be dropped —
+  // gpg-list used to vanish because enterSetup ran from onExited while
+  // Process.running was still true.
+  property var setupQueue: []
 
   // `vault` pins the call: the active vault, or the wizard's draft.
   function runSetup(op, args, busyText, vault) {
     if (setupProcess.running) {
-      // status is cheap and re-run on every open; anything else waits its turn.
-      if (op === "status") statusPending = true
+      if (op === "status") { statusPending = true; return }
+      setupQueue.push({ op: op, args: args || [], busyText: busyText || "", vault: vault })
       return
     }
     setupOp = op
@@ -595,6 +600,19 @@ Item {
     var target = vault || (mode === "setup" ? draft : activeVault)
     setupProcess.command = [setupPath, op].concat(vaultArgs(target)).concat(args || [])
     setupProcess.running = true
+  }
+
+  function drainSetup() {
+    if (setupProcess.running) return
+    if (setupQueue.length > 0) {
+      var next = setupQueue.shift()
+      runSetup(next.op, next.args, next.busyText, next.vault)
+      return
+    }
+    if (statusPending) {
+      statusPending = false
+      runSetup("status", [], "", mode === "setup" ? draft : activeVault)
+    }
   }
 
   Process {
@@ -618,10 +636,7 @@ Item {
       } else {
         root.handleSetupResult(op, parsed)
       }
-      if (root.statusPending) {
-        root.statusPending = false
-        Qt.callLater(function() { root.runSetup("status", [], "", root.mode === "setup" ? root.draft : root.activeVault) })
-      }
+      Qt.callLater(root.drainSetup)
     }
   }
 
@@ -636,7 +651,10 @@ Item {
         applyStatus(parsed)
         if (autoRoute) {
           autoRoute = false
-          if (!storeUsable && mode === "search") enterSetup(-1)
+          // Re-enter setup even if the last open left mode === "setup";
+          // otherwise gpg-list never runs again after a generate in a
+          // terminal and the card still says "gpg has no key yet".
+          if (!storeUsable) enterSetup(-1)
           else if (storeUsable && mode === "search" && syncActive && pullOnOpen) pullOnOpenNow()
         }
         break
@@ -842,7 +860,7 @@ Item {
     }
     for (var i = 0; i < vaults.length; i++) if (vaults[i].id === activeVaultId) vaultIndex = i
     goToStep(step)
-    if (gpgKeys.length === 0) runSetup("gpg-list", [], "", draft)
+    runSetup("gpg-list", [], "", draft)
   }
 
   function leaveSetup() {
@@ -1995,7 +2013,9 @@ Item {
 
             SetupButton {
               text: "Back"
-              visible: root.setupStep > 0 || root.gpgImporting
+              visible: root.gpgImporting
+                || root.setupStep > 1
+                || (root.setupStep === 1 && (root.vaultsOnRecord || root.storeUsable))
               onClicked: root.setupBack()
             }
             SetupButton {
