@@ -307,7 +307,10 @@ Item {
   readonly property int footerHeight: footerLabel.implicitHeight
   property int maxVisibleRows: 10
 
-  property int cardWidth: Math.min(Style.space(420), panel.width - Style.gapsOut * 2)
+  // Search stays menu-width; setup has extra buttons (import public/private)
+  // that do not fit in 420.
+  property int cardWidth: Math.min(mode === "setup" ? Style.space(560) : Style.space(420),
+                                   panel.width - Style.gapsOut * 2)
   readonly property int visibleRowsHeight: {
     var n = Math.min(rows.length, maxVisibleRows)
     if (n === 0) return rowHeight * 2   // room for the "no matches" message
@@ -1787,7 +1790,7 @@ Item {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             text: root.setupStep === 0 ? "Password Store setup"
-              : "Password Store setup  " + root.setupStep + " / " + (root.stepTitles.length - 1)
+              : root.setupStep + " / " + (root.stepTitles.length - 1)
             color: root.foreground
             opacity: 0.45
             font.family: root.fontFamily
@@ -1945,14 +1948,33 @@ Item {
             }
           }
 
-          Row {
-            spacing: Style.spacing.controlGap
-            topPadding: Style.space(6)
+          Grid {
+            width: parent.width
+            columns: 2
+            columnSpacing: Style.spacing.controlGap
+            rowSpacing: Style.spacing.controlGap
+            topPadding: Style.space(8)
             visible: !root.gpgImporting
-            SetupButton { text: "Generate a key"; onClicked: root.generateKey() }
-            SetupButton { text: "Import private key"; onClicked: root.beginImport("secret") }
-            SetupButton { text: "Import public key"; onClicked: root.beginImport("public") }
-            SetupButton { text: "Rescan"; onClicked: root.runSetup("gpg-list", [], "", root.draft) }
+            SetupButton {
+              text: "Generate a key"
+              width: (parent.width - parent.columnSpacing) / 2
+              onClicked: root.generateKey()
+            }
+            SetupButton {
+              text: "Rescan"
+              width: (parent.width - parent.columnSpacing) / 2
+              onClicked: root.runSetup("gpg-list", [], "", root.draft)
+            }
+            SetupButton {
+              text: "Import private key"
+              width: (parent.width - parent.columnSpacing) / 2
+              onClicked: root.beginImport("secret")
+            }
+            SetupButton {
+              text: "Import public key"
+              width: (parent.width - parent.columnSpacing) / 2
+              onClicked: root.beginImport("public")
+            }
           }
         }
 
@@ -2081,17 +2103,15 @@ Item {
           topPadding: Style.space(4)
         }
 
-        // Buttons and the key legend.
-        Item {
+        // Legend full width, then Back / primary — sharing one row clipped
+        // the GPG actions and ate "Import public key".
+        Column {
           width: parent.width
-          height: Math.max(buttonRow.implicitHeight, setupFooter.implicitHeight)
+          spacing: Style.space(8)
 
           Text {
             id: setupFooter
-            anchors.left: parent.left
-            anchors.right: buttonRow.left
-            anchors.rightMargin: Style.space(12)
-            anchors.verticalCenter: parent.verticalCenter
+            width: parent.width
             text: root.setupHint + "  ·  Esc " + (root.setupStep > 0 && (root.vaultsOnRecord || root.storeUsable) ? "vaults" : (root.storeUsable ? "back to search" : "cancel"))
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
@@ -2104,7 +2124,6 @@ Item {
           Row {
             id: buttonRow
             anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
             spacing: Style.spacing.controlGap
 
             SetupButton {
