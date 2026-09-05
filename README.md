@@ -88,7 +88,7 @@ opens the same wizard later, starting at the list of vaults.
 | **Vaults** | The vaults on record. `Enter` edits one, `A` adds one, `D` makes one active, `X` forgets its record (the directory and its entries are left alone; delete them yourself if you mean it). |
 | **Vault** | A name and a directory. Each vault is its own `PASSWORD_STORE_DIR`; the first defaults to `~/.password-store`, a second to `~/.password-store-shared`. |
 | **Dependencies** | `pass` and `gnupg` are required, `git`, `rclone`, `pass-otp`, `wtype` optional. `Space` selects, `Enter` runs `omarchy pkg add` in a floating terminal. |
-| **GPG keys** | The keys gpg knows about, secret ones first. `Space` selects one or more, `G` runs `gpg --full-generate-key` in a terminal (you answer gpg and pinentry; nothing is filled in for you), `I` imports a key file. |
+| **GPG keys** | The keys gpg knows about, secret ones first. `Space` selects one or more, `G` generates, `I` imports a **private** key, `U` a **public** key. Import names the type and pre-fills `~/secret.asc`, `~/public.asc`, or a matching file in Downloads/Documents if one is there. |
 | **Password store** | `pass init <keys…>` in the vault's directory. A directory that already has a `.gpg-id` is kept as it is; re-encrypting it for other keys is a separate, explicit choice. |
 | **Sync** | One of the four backends below, then its first-time wiring. Applying saves the vault and drops you back into the search on it. |
 
@@ -100,15 +100,15 @@ usable yet; `Alt+←` / `Alt+→` are Back and Next.
 Two ways to encrypt one store for several people; the first is the one to
 prefer:
 
-- **Several recipients.** Everyone keeps their own key. Import your
-  teammates' *public* keys first (`gpg --import teammate.asc`, or `I` on the
-  GPG page), then select all of them on the GPG page. `pass init` is run with
-  every id, so each entry is encrypted for each of you, and one selected key
-  must be yours or nothing could be read here.
+- **Several recipients.** Everyone keeps their own key. Import teammates'
+  *public* keys first (`Import public key` / `U` on the GPG page, or drop
+  `teammate.asc` in `~/Downloads`), then select all of them. `pass init` is
+  run with every id, so each entry is encrypted for each of you, and one
+  selected key must be yours or nothing could be read here.
 - **One shared key.** Generate a key for the team, export it with
   `gpg --export-secret-keys --armor`, and import that file on every machine
-  (`I` on the GPG page; pinentry asks for its passphrase). Simpler, but a key
-  everybody holds is a key nobody can revoke for one person.
+  (`Import private key` / `I`; pinentry asks for its passphrase). Simpler,
+  but a key everybody holds is a key nobody can revoke for one person.
 
 Either way the shared store is its own directory (`~/.password-store-shared`)
 and syncs on its own, usually through git.
@@ -206,7 +206,7 @@ hand:
   window you were in. With `--sync --vault ID` the terminal actions end with
   a push.
 - `passwordstore-setup <command> [...]` is the wizard's back end: `status`,
-  `gpg-list`, `gpg-generate`, `gpg-import`, `install`, `init`, `sync-status`,
+  `gpg-list`, `gpg-generate`, `gpg-inspect`, `gpg-import`, `install`, `init`, `sync-status`,
   `sync-setup`, `sync-pull`, `sync-push`. JSON on stdout, settings read from
   the vault's record in `shell.json` when not given as options. Anything that
   may ask for a passphrase or a credential runs in a floating terminal that

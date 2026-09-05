@@ -596,7 +596,7 @@ Item {
     }
     setupOp = op
     setupBusy = busyText || ""
-    if (op !== "status") setupError = ""
+    if (op !== "status" && op !== "gpg-inspect") setupError = ""
     var target = vault || (mode === "setup" ? draft : activeVault)
     setupProcess.command = [setupPath, op].concat(vaultArgs(target)).concat(args || [])
     setupProcess.running = true
@@ -640,6 +640,13 @@ Item {
     }
   }
 
+  Timer {
+    id: importInspectTimer
+    interval: 350
+    repeat: false
+    onTriggered: root.inspectImportPath()
+  }
+
   function handleSetupResult(op, parsed) {
     if (parsed.error) {
       if (op === "status") console.warn("passwordstore: status:", parsed.error)
@@ -667,11 +674,33 @@ Item {
       case "gpg-generate":
       case "gpg-import":
         gpgKeys = Array.isArray(parsed.keys) ? parsed.keys : []
-        if (op === "gpg-import" && parsed.importedSecret === false)
-          setupNote = "That file held no secret key" + (parsed.detail ? ": " + String(parsed.detail).trim() : "")
-        else if (op === "gpg-import") { setupNote = "Key imported"; gpgImporting = false; importPathField.text = "" }
+        if (op === "gpg-import") {
+          var kind = String(parsed.kind || (parsed.importedSecret ? "secret" : "public"))
+          if (kind === "secret")
+            setupNote = "Imported a private (secret) key. This seat can decrypt entries encrypted for it."
+          else
+            setupNote = "Imported a public key (recipient). It cannot decrypt here; select it with your private key for a shared vault."
+          gpgImporting = false
+          gpgImportKind = ""
+          importInspect = {}
+          importPathField.text = ""
+        }
         if (op === "gpg-generate" && parsed.status === 124) setupNote = "Still waiting for gpg? Press F5 to rescan"
         preselectStoreKeys()
+        break
+      case "gpg-inspect":
+        if (parsed.defaults !== undefined) {
+          importDefaults = parsed.defaults || {}
+          if (gpgImporting && String(importPathField.text).trim() === "") {
+            var suggested = importDefaults[gpgImportKind]
+            if (suggested && suggested.path) {
+              importPathField.text = suggested.path
+              importInspect = suggested
+            }
+          }
+        } else {
+          importInspect = parsed
+        }
         break
       case "init":
         applyStatus(parsed)
@@ -775,6 +804,9 @@ Item {
   property int gpgIndex: 0
   property var selectedGpg: []         // fingerprints
   property bool gpgImporting: false
+  property string gpgImportKind: ""    // "secret" (private) | "public"
+  property var importInspect: ({})
+  property var importDefaults: ({})
 
   property bool reencryptOffered: false
 
@@ -854,6 +886,8 @@ Item {
     removeConfirm = ""
     reencryptOffered = false
     gpgImporting = false
+    gpgImportKind = ""
+    importInspect = {}
     if (step < 0) {
       if (!storeUsable && !vaultsOnRecord) { beginDraft(activeVault, false); step = requiredDepsMissing ? 2 : 1 }
       else step = 0
@@ -959,7 +993,7 @@ Item {
 
   function setupBack() {
     if (setupBusy !== "") return
-    if (setupStep === 3 && gpgImporting) { gpgImporting = false; focusSetupPage(); return }
+    if (setupStep === 3 && gpgImporting) { gpgImporting = false; gpgImportKind = ""; importInspect = {}; focusSetupPage(); return }
     if (setupStep === 1) { if (vaultsOnRecord || storeUsable) goToStep(0); return }
     if (setupStep === 3 && !requiredDepsMissing) { goToStep(1); return }
     if (setupStep > 0) goToStep(setupStep - 1)
@@ -967,7 +1001,7 @@ Item {
 
   function setupCancel() {
     if (setupBusy !== "") return
-    if (setupStep === 3 && gpgImporting) { gpgImporting = false; focusSetupPage(); return }
+    if (setupStep === 3 && gpgImporting) { gpgImporting = false; gpgImportKind = ""; importInspect = {}; focusSetupPage(); return }
     if (syncConfirm !== "") { syncConfirm = ""; return }
     if (removeConfirm !== "") { removeConfirm = ""; return }
     if (setupStep > 0 && (vaultsOnRecord || storeUsable)) { goToStep(0); return }
@@ -1048,7 +1082,45 @@ Item {
   function importKey() {
     var path = importPathField.text.trim()
     if (path === "") { setupError = "Type the path of the key file"; return }
-    runSetup("gpg-import", ["--file", path], "Importing… (pinentry may ask for the key's passphrase)", draft)
+    var busy = gpgImportKind === "public"
+      ? "Importing a public key…"
+      : "Importing a private key… (pinentry may ask for its passphrase)"
+    runSetup("gpg-import", ["--file", path], busy, draft)
+  }
+
+  function beginImport(kind) {
+    if (!kind) {
+      var hasSecret = false
+      for (var k = 0; k < gpgKeys.length; k++) if (gpgKeys[k].secret) { hasSecret = true; break }
+      kind = hasSecret ? "public" : "secret"
+    }
+    gpgImporting = true
+    gpgImportKind = kind
+    importInspect = {}
+    setupError = ""
+    importPathField.text = ""
+    runSetup("gpg-inspect", [], "", draft)
+    focusSetupPage()
+  }
+
+  function inspectImportPath() {
+    if (!gpgImporting) return
+    var path = importPathField.text.trim()
+    if (path === "") { importInspect = {}; return }
+    runSetup("gpg-inspect", ["--file", path], "", draft)
+  }
+
+  readonly property string importKindLabel: {
+    var k = importInspect && importInspect.kind ? String(importInspect.kind) : ""
+    if (k === "secret") return "Private (secret) key — this seat can decrypt with it."
+    if (k === "public") return "Public key — recipient only; this seat cannot decrypt with it."
+    if (k === "missing") return "No file at that path yet."
+    if (k === "unknown") return "Could not tell whether this is a public or private key."
+    return ""
+  }
+  readonly property bool importKindMismatch: {
+    var k = importInspect && importInspect.kind ? String(importInspect.kind) : ""
+    return (k === "secret" || k === "public") && gpgImportKind !== "" && k !== gpgImportKind
   }
 
   function generateKey() {
@@ -1171,7 +1243,8 @@ Item {
     if (setupStep === 2 && letter === "s" && !requiredDepsMissing) { goToStep(3); return true }
     if (setupStep === 3 && event.key === Qt.Key_Space) { toggleGpg(gpgIndex); return true }
     if (setupStep === 3 && letter === "g") { generateKey(); return true }
-    if (setupStep === 3 && letter === "i") { gpgImporting = true; focusSetupPage(); return true }
+    if (setupStep === 3 && letter === "i") { beginImport("secret"); return true }
+    if (setupStep === 3 && letter === "u") { beginImport("public"); return true }
     if (setupStep === 4 && letter === "r") { reencrypt(); return true }
     if (setupStep === 5 && letter === "p") { togglePull(); return true }
     if (setupStep === 5 && letter === "m" && setupBackend === "rclone") {
@@ -1200,7 +1273,9 @@ Item {
         return vaultIndex < vaultRows.length && vaultRows[vaultIndex].kind === "add" ? "Add" : "Edit"
       case 1: return "Next"
       case 2: return depSelected.length > 0 ? "Install selected" : "Next"
-      case 3: return gpgImporting ? "Import" : "Use selected"
+      case 3: return gpgImporting
+        ? (gpgImportKind === "public" ? "Import public key" : "Import private key")
+        : "Use selected"
       case 4: return storeExists ? "Next" : "Create store"
       default: return syncConfirm !== "" ? "Yes, upload" : "Apply"
     }
@@ -1216,7 +1291,9 @@ Item {
       case 0: return "↑↓ choose  ·  Enter edit  ·  A add  ·  D make active  ·  X forget"
       case 1: return "Tab between fields  ·  Enter next"
       case 2: return "Space select  ·  Enter install  ·  S skip"
-      case 3: return gpgImporting ? "Enter import  ·  Esc back to the list" : "↑↓ move  ·  Space select  ·  Enter continue  ·  G generate  ·  I import  ·  F5 rescan"
+      case 3: return gpgImporting
+        ? "Enter import  ·  Esc back to the list"
+        : "↑↓ move  ·  Space select  ·  Enter continue  ·  G generate  ·  I private key  ·  U public key  ·  F5 rescan"
       case 4: return reencryptOffered ? "Enter keep the store's keys  ·  R re-encrypt" : "Enter continue"
       default: return "1–4 or ↑↓ backend  ·  Tab fields  ·  P pull on open" + (setupBackend === "rclone" ? "  ·  M copy/sync" : "") + "  ·  Enter apply"
     }
@@ -1845,13 +1922,26 @@ Item {
             visible: root.gpgImporting
 
             SetupText {
-              text: "Path of a key file: your own exported with gpg --export-secret-keys --armor, or a teammate's public key from gpg --export --armor. pinentry asks for a passphrase if the file has one."
+              text: root.gpgImportKind === "public"
+                ? "Public key (recipient). Teammates keep their secret keys; you only import what gpg --export --armor wrote. This seat cannot decrypt with it."
+                : "Private (secret) key. This seat will be able to decrypt. Export with gpg --export-secret-keys --armor. pinentry asks for the passphrase if the file has one."
               opacity: 0.7
             }
             SetupField {
               id: importPathField
-              placeholderText: "~/key.asc"
+              placeholderText: root.gpgImportKind === "public" ? "~/public.asc" : "~/secret.asc"
               onAccepted: root.setupPrimary()
+              onTextChanged: importInspectTimer.restart()
+            }
+            SetupText {
+              visible: root.importKindLabel !== ""
+              text: (root.importKindMismatch
+                ? (root.importInspect.kind === "secret"
+                  ? "This file is a private key, not a public key. "
+                  : "This file is a public key, not a private key. ")
+                : "") + root.importKindLabel
+              color: root.importKindMismatch ? Color.urgent : root.foreground
+              opacity: 1
             }
           }
 
@@ -1860,7 +1950,8 @@ Item {
             topPadding: Style.space(6)
             visible: !root.gpgImporting
             SetupButton { text: "Generate a key"; onClicked: root.generateKey() }
-            SetupButton { text: "Import a key"; onClicked: { root.gpgImporting = true; root.focusSetupPage() } }
+            SetupButton { text: "Import private key"; onClicked: root.beginImport("secret") }
+            SetupButton { text: "Import public key"; onClicked: root.beginImport("public") }
             SetupButton { text: "Rescan"; onClicked: root.runSetup("gpg-list", [], "", root.draft) }
           }
         }

@@ -106,10 +106,14 @@ case " $* " in
       FEDCBA9876543210FEDCBA9876543210FEDCBA98 bob@example.com \
       AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA carol@example.com ;;
   *" --import "*)
-    if grep -q SECRET "$last" 2>/dev/null; then
+    if grep -qE 'SECRET|PRIVATE' "$last" 2>/dev/null; then
       echo "gpg: key 0123456789ABCDEF: secret key imported" >&2
     else
       echo "gpg: key AAAAAAAAAAAAAAAA: public key \"Carol\" imported" >&2
+    fi ;;
+  *" --show-keys "*)
+    if grep -qE 'SECRET|PRIVATE' "$last" 2>/dev/null; then secret_colons
+    else public_colons
     fi ;;
   *" --full-generate-key "*) touch "$WORK/generated" ;;
   *) exit 1 ;;
@@ -340,12 +344,26 @@ out=$("$SETUP" gpg-generate)
 [[ -e $work/generated ]] && ok "gpg-generate: runs gpg --full-generate-key in the terminal" || bad "gpg-generate: runs gpg --full-generate-key in the terminal"
 check "gpg-generate: rescans afterwards" '(.keys | length) == 3 and .status == 0' "$out"
 
-printf 'SECRET KEY BLOCK\n' > "$work/secret.asc"
-printf 'PUBLIC KEY BLOCK\n' > "$work/public.asc"
+printf '%s\n' '-----BEGIN PGP PRIVATE KEY BLOCK-----' > "$work/secret.asc"
+printf '%s\n' '-----BEGIN PGP PUBLIC KEY BLOCK-----' > "$work/public.asc"
 out=$("$SETUP" gpg-import --file "$work/secret.asc")
-check "gpg-import: a secret key file is imported" '.importedSecret == true' "$out"
+check "gpg-import: a secret key file is imported" '.importedSecret == true and .kind == "secret"' "$out"
 out=$("$SETUP" gpg-import --file "$work/public.asc")
-check "gpg-import: a public-only file says so" '.importedSecret == false' "$out"
+check "gpg-import: a public-only file says so" '.importedSecret == false and .kind == "public"' "$out"
+
+out=$("$SETUP" gpg-inspect --file "$work/secret.asc")
+check "gpg-inspect: private armor is secret" '.kind == "secret" and .exists == true' "$out"
+out=$("$SETUP" gpg-inspect --file "$work/public.asc")
+check "gpg-inspect: public armor is public" '.kind == "public"' "$out"
+out=$("$SETUP" gpg-inspect --file "$work/missing.asc")
+check "gpg-inspect: a missing file is missing" '.kind == "missing" and .exists == false' "$out"
+
+mkdir -p "$HOME/Downloads"
+printf '%s\n' '-----BEGIN PGP PRIVATE KEY BLOCK-----' > "$HOME/secret.asc"
+printf '%s\n' '-----BEGIN PGP PUBLIC KEY BLOCK-----' > "$HOME/Downloads/team.asc"
+out=$("$SETUP" gpg-inspect)
+check "gpg-inspect: ~/secret.asc is the private default" '.defaults.secret.path == "~/secret.asc"' "$out"
+check "gpg-inspect: Downloads public key is the public default" '.defaults.public.path == "~/Downloads/team.asc"' "$out"
 out=$("$SETUP" gpg-import --file "$work/missing.asc")
 check "gpg-import: a missing file is an error" '.error | test("Cannot read")' "$out"
 grep -q -- "--import -- $work/secret.asc" "$work/gpg.calls" && ok "gpg-import: the path is handed to gpg after --" \
