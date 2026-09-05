@@ -34,7 +34,7 @@ case $1 in
       -c*) echo "copied"; (sleep 4) & exit 0 ;;
     esac
     printf 'hunter2\nlogin: alice@example.com\nurl: https://example.com\n' ;;
-  otp) exit 0 ;;
+  otp|edit|insert|generate) exit 0 ;;
   *) exit 1 ;;
 esac
 SHIM
@@ -143,6 +143,64 @@ reset
 "$ACTION" copy-password x --quiet >/dev/null 2>&1
 [[ -z $(cat "$work/pass.store") ]] && ok "without --store pass resolves the store itself" \
   || bad "without --store pass resolves the store itself"
+
+# --- terminal actions: edit / insert / generate, with the push afterwards ------
+
+# A terminal hook that runs the script here, and a shell.json whose vault
+# has a custom push command, so --sync can be seen to run end to end.
+printf '#!/bin/bash\nexec "$@"\n' > "$work/bin/term"; chmod +x "$work/bin/term"
+export PASSWORDSTORE_TERMINAL="$work/bin/term"
+export XDG_CONFIG_HOME="$work/config"
+mkdir -p "$work/config/omarchy" "$work/store"
+jq -n --arg store "$work/store" '{bar: {layout: {left: [], center: [], right: [{
+  id: "io.github.gw7523.passwordstore", activeVaultId: "personal",
+  vaults: [{id: "personal", name: "Personal", storeDir: $store, syncBackend: "custom",
+            syncPushCmd: "touch \"$STORE/pushed\""},
+           {id: "shared", name: "Shared", storeDir: $store, syncBackend: "local"}]}]}}}' \
+  > "$work/config/omarchy/shell.json"
+wait_for() { # file
+  for _ in $(seq 1 30); do [[ -e $1 ]] && return 0; sleep 0.1; done
+  return 1
+}
+
+reset; rm -f "$work/store/pushed"
+"$ACTION" edit web/site --store "$work/store" --sync --vault personal >/dev/null 2>&1
+wait_for "$work/store/pushed" && ok "edit --sync pushes with the vault's command once pass edit is done" \
+  || bad "edit --sync pushes with the vault's command once pass edit is done"
+wait_for "$work/pass.calls" && grep -qx 'edit web/site' "$work/pass.calls" && ok "edit runs pass edit in the terminal" \
+  || bad "edit runs pass edit in the terminal"
+
+reset; rm -f "$work/store/pushed"
+"$ACTION" edit web/site --store "$work/store" >/dev/null 2>&1
+wait_for "$work/pass.calls"; sleep 0.3
+[[ ! -e $work/store/pushed ]] && ok "without --sync nothing is pushed" || bad "without --sync nothing is pushed"
+
+reset; rm -f "$work/store/pushed"
+"$ACTION" edit web/site --store "$work/store" --sync --vault shared >/dev/null 2>&1
+wait_for "$work/pass.calls"; sleep 0.3
+[[ ! -e $work/store/pushed ]] && ok "--vault picks that vault's backend (shared is local: no push)" \
+  || bad "--vault picks that vault's backend (shared is local: no push)"
+
+reset
+"$ACTION" insert web/new --store "$work/store" >/dev/null 2>&1
+wait_for "$work/pass.calls" && grep -qx 'insert web/new' "$work/pass.calls" && ok "insert runs pass insert with the name" \
+  || bad "insert runs pass insert with the name"
+
+reset
+"$ACTION" generate web/new --store "$work/store" --clip-time 9 >/dev/null 2>&1
+wait_for "$work/pass.calls" && grep -qx 'generate -c web/new' "$work/pass.calls" && ok "generate runs pass generate -c" \
+  || bad "generate runs pass generate -c"
+
+reset
+"$ACTION" insert "" --store "$work/store" </dev/null >/dev/null 2>&1
+[[ $? -eq 0 ]] && ok "insert without a name is accepted (the terminal asks for one)" \
+  || bad "insert without a name is accepted (the terminal asks for one)"
+sleep 0.3
+[[ ! -e $work/pass.calls ]] && ok "…and pass is not run with an empty name" || bad "…and pass is not run with an empty name"
+
+reset
+"$ACTION" copy-password "" >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "other actions still need a name" || bad "other actions still need a name"
 
 echo
 printf '%d passed, %d failed\n' "$passed" "$failed"
