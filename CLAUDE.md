@@ -57,16 +57,34 @@ live. Never install over a live `hegjon.passwordstore` checkout.
   (`IpcHandler::updateRegistration` during `onPostReload`) when a plugin
   hot-reload raced an `omarchy-restart-shell`. No first-party overlay has one;
   neither does this plugin now. Save files, *then* wait, *then* restart.
-- `pass show -cN` copies the *whole* line N, `login: alice` included, which is
-  why the username path reads the entry and copies the value itself (with the
-  same clear-after-N-seconds behaviour). Password and OTP still go through
-  `pass -c` so pass's own clipboard handling is kept.
+- `pass -c` copies with a plain `wl-copy`, which Omarchy's clipboard history
+  records. Every copy is therefore done by the helper: `wl-copy --sensitive`
+  (the x-kde-passwordManagerHint type, which
+  `/usr/share/omarchy/shell/plugins/clipboard/capture.sh` refuses), a
+  sleeper that clears the clipboard after `clipTimeSec`, and a purge of
+  `~/.local/state/omarchy/clipboard-history.json` (the shell watches that
+  file) in case an older wl-copy let the value in. `pass show -cN` would
+  also have copied the whole `login: alice` line.
+- The editor is the one place a password is in QML (the masked field, like
+  the lock screen's). It reaches `passwordstore-action save` over the
+  Process's stdin, written from `onStarted` and closed by setting
+  `stdinEnabled = false`; `read` output is gathered through a `SplitParser`
+  with an empty marker and the buffer cleared after parsing, because a
+  `StdioCollector` keeps its text until the next run. `resetEditor()` wipes
+  every field whenever the card leaves the editor, including on dismiss.
+- Entries are `name/username` paths; `splitName` takes the last segment as
+  the username. The file format `save` writes and `read` parses is in the
+  helper's header comment; unknown `key: value` lines and `otpauth://` lines
+  round-trip through `extra`.
 - The search card is type-to-filter with no TextField (the menu's pattern),
   so single letters are never shortcuts there; actions are Enter plus
   modifiers, and `Tab` switches vaults. `Util.editsFilter` claims Ctrl+U
   (clear) and Backspace. The wizard pages *do* have single-letter keys and
-  TextFields: `keyCatcher` ignores keys in setup mode so they bubble to the
-  card's `Keys.onPressed`, after the focused field has had its turn.
+  TextFields, and the editor has fields and `Ctrl`/`Alt` keys: `keyCatcher`
+  ignores keys outside search mode so they bubble to the card's
+  `Keys.onPressed`, after the focused field has had its turn (`EditField`
+  and the notes area also run `editKey` first, so Esc and Ctrl+Enter work
+  from inside a field).
 - `--quiet` only suppresses the success notifications; failures always notify,
   because the popup is gone by the time the script runs.
 - A helper that asks a question (rclone's "upload N entries?", init's
@@ -79,8 +97,10 @@ live. Never install over a live `hegjon.passwordstore` checkout.
 
 ## Style
 
-- Comments explain *why*. Secrets never go through argv, `console.log`, or a
-  QML property; keep it that way. Entry names and remote URLs are not
-  secrets; custom sync commands are stored in `shell.json`, which is why the
-  docs say not to put a secret in one.
+- Comments explain *why*. Secrets never go through argv, `console.log`,
+  notifications or files outside the store; the only QML that holds one is
+  the editor's password field, wiped on leave. Keep it that way. Entry names
+  (which include usernames) and remote URLs are not secrets; custom sync
+  commands are stored in `shell.json`, which is why the docs say not to put
+  a secret in one.
 - Version lives in `manifest.json`.

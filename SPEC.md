@@ -199,3 +199,34 @@ validate passes.
 - Storing rclone OAuth in the plugin.
 - Age instead of GPG.
 - Rewriting `pass` itself.
+
+## Revision 2 (2026-09-06): editor, entry format, clipboard
+
+Requested after the first cut shipped. These amend the sections above.
+
+1. **Editor on the card.** Adding and editing an entry happens in a form on
+   the overlay, not in a terminal: name (application / website / account),
+   username, password, notes, plus created-on / modified-on stamps. The
+   password field is masked with dots like the lock screen's, accepts a
+   paste, has a reveal control, and when revealed colours lower-case,
+   upper-case, digits and symbols differently. A generate control makes a
+   random password with the user's choice of letters / digits / symbols and
+   length. `pass edit` in a terminal stays as a fallback.
+2. **Clipboard.** A copied password must not remain in Omarchy's clipboard
+   manager: copies are made with `wl-copy --sensitive` (the
+   x-kde-passwordManagerHint type the shell's capture script skips), the
+   clipboard is cleared after `clipTimeSec` (default now 60), and the
+   history file is scrubbed of the value at that moment as a fallback.
+3. **Entry model.** Name, username and password are the unit. The store path
+   is `<name>/<username>`; the file holds the password on line 1, a
+   `username:` line, `created:` / `modified:` stamps, any other `key: value`
+   lines an entry already had, a blank line, then notes. The list shows the
+   name prominently with the username under it; the search matches both.
+4. **Security, amended.** "The overlay never decrypts" now reads: the
+   *search card* never decrypts. The editor receives an entry's plaintext
+   from `passwordstore-action read` over a pipe and returns it to
+   `passwordstore-action save` over stdin; it is never in argv, a log, a
+   notification or a file outside the store, and the field is wiped whenever
+   the card leaves the editor. `pass -c` is no longer used for copies (it
+   cannot set the hint).
+

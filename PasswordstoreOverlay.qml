@@ -4,6 +4,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import QtQuick
+import QtQuick.Controls as QQC
 import qs.Commons
 import qs.Ui
 
@@ -12,10 +13,17 @@ import qs.Ui
 // rows. Summoned with `omarchy-shell shell toggle io.github.gw7523.passwordstore '{}'`
 // from a keybinding or the bar button. Without the payload the toggle is a no-op.
 //
-// The overlay never sees a secret. passwordstore-list walks the store for the
-// names of the *.gpg files, and passwordstore-action hands a chosen entry to
-// pass itself (or wtype, for typing) once the card has closed. gpg-agent
-// prompts through pinentry as it would from a terminal.
+// The search card never sees a secret. passwordstore-list walks the store
+// for the names of the *.gpg files, and passwordstore-action hands a chosen
+// entry to pass itself (or wtype, for typing) once the card has closed.
+// gpg-agent prompts through pinentry as it would from a terminal.
+//
+// The editor (Alt+N, Alt+E) is the one place a password is held here: a
+// masked field, like the lock screen's, that accepts a paste, can reveal the
+// value with each character class in its own colour, and can generate one.
+// The value reaches pass over the helper's stdin, never argv, and the field
+// is wiped the moment the card leaves the editor. Entries are stored as
+// name/username so the list can show both without decrypting anything.
 //
 // A seat can hold several vaults (a personal store, a shared team store),
 // each its own PASSWORD_STORE_DIR with its own keys and sync backend; the
@@ -111,7 +119,7 @@ Item {
     return Math.max(min, Math.min(max, value))
   }
 
-  readonly property int clipTimeSec: intSetting("clipTimeSec", 45, 5, 600)
+  readonly property int clipTimeSec: intSetting("clipTimeSec", 60, 5, 600)
   readonly property string usernameKeys: String(setting("usernameKeys", "login,user,username,email")).trim()
   readonly property bool allowTyping: boolSetting("allowTyping", true)
   readonly property bool notifyOnCopy: boolSetting("notifyOnCopy", true)
@@ -282,6 +290,8 @@ Item {
   readonly property string boxCheckedGlyph: String.fromCodePoint(0xF0132) // nf-md-checkbox_marked
   readonly property string vaultGlyph: String.fromCodePoint(0xF0BB4)   // nf-md-safe_square_outline
   readonly property string plusGlyph: String.fromCodePoint(0xF0415)    // nf-md-plus
+  readonly property string eyeGlyph: String.fromCodePoint(0xF0208)     // nf-md-eye
+  readonly property string eyeOffGlyph: String.fromCodePoint(0xF0209)  // nf-md-eye_off
 
   // --- look: the menu's tokens ------------------------------------------
 
@@ -307,9 +317,9 @@ Item {
   readonly property int footerHeight: footerLabel.implicitHeight
   property int maxVisibleRows: 10
 
-  // Search stays menu-width; setup has extra buttons (import public/private)
-  // that do not fit in 420.
-  property int cardWidth: Math.min(mode === "setup" ? Style.space(560) : Style.space(420),
+  // Search stays menu-width; setup and the editor have fields and buttons
+  // side by side that do not fit in 420.
+  property int cardWidth: Math.min(mode !== "search" ? Style.space(560) : Style.space(420),
                                    panel.width - Style.gapsOut * 2)
   readonly property int visibleRowsHeight: {
     var n = Math.min(rows.length, maxVisibleRows)
@@ -320,13 +330,16 @@ Item {
     contentMargin * 2 + headerHeight + contentSpacing + visibleRowsHeight + contentSpacing + footerHeight
   readonly property int setupCardHeight:
     contentMargin * 2 + setupColumn.implicitHeight
+  readonly property int editCardHeight:
+    contentMargin * 2 + editColumn.implicitHeight
   readonly property int cardHeight: Math.min(
-    mode === "setup" ? setupCardHeight : searchCardHeight,
+    mode === "setup" ? setupCardHeight : (mode === "edit" ? editCardHeight : searchCardHeight),
     panel.height - Style.gapsOut * 2)
 
   // --- open / close (the shell's overlay contract) ----------------------
 
   function open(payloadJson) {
+    if (root.mode === "edit") root.resetEditor()
     root.filterText = ""
     root.selectedIndex = 0
     root.cursorActive = true
@@ -345,10 +358,12 @@ Item {
 
   function close() {
     root.opened = false
+    if (root.mode === "edit") root.resetEditor()
   }
 
   function dismiss() {
     root.opened = false
+    if (root.mode === "edit") root.resetEditor()
     if (root.shell && typeof root.shell.hide === "function")
       root.shell.hide((root.manifest && root.manifest.id) || root.pluginId)
   }
@@ -371,15 +386,16 @@ Item {
   // broken by how early the match begins, then by the store's own order.
   function scoreEntry(name, tokens) {
     var lower = name.toLowerCase()
-    var base = lower.slice(lower.lastIndexOf("/") + 1)
+    var parts = splitName(lower)
     var score = 0
     for (var t = 0; t < tokens.length; t++) {
       var token = tokens[t]
       var at = lower.indexOf(token)
       if (at >= 0) {
         score += 1000 - at
-        if (base.indexOf(token) === 0) score += 500       // basename starts with it
-        else if (base.indexOf(token) >= 0) score += 200   // somewhere in basename
+        if (parts.title.indexOf(token) === 0) score += 500          // name starts with it
+        else if (parts.username.indexOf(token) === 0) score += 300  // username starts with it
+        else if (parts.title.indexOf(token) >= 0) score += 200      // somewhere in the name
         continue
       }
       var pos = 0
@@ -393,12 +409,15 @@ Item {
     return score
   }
 
+  // An entry is stored as name/username (github.com/jack); a bare name has
+  // no username. The last path segment is the username, whatever is before
+  // it the application, website or account name.
   function splitName(name) {
     var slash = name.lastIndexOf("/")
     return {
       name: name,
-      leaf: slash >= 0 ? name.slice(slash + 1) : name,
-      folder: slash >= 0 ? name.slice(0, slash) : ""
+      title: slash >= 0 ? name.slice(0, slash) : name,
+      username: slash >= 0 ? name.slice(slash + 1) : ""
     }
   }
 
@@ -531,6 +550,11 @@ Item {
   function runAction(action, entry) {
     if (actionProcess.running) return
     var name = entry ? String(entry.name) : ""
+    // The card's own editor for new entries and edits; `pass edit` in a
+    // terminal stays available (Alt+Shift+E) for an entry in some other format.
+    if (action === "edit") { if (name) openEditor(entry); return }
+    if (action === "insert") { openEditor(null, name); return }
+    if (action === "edit-terminal") action = "edit"
     var terminalAction = action === "edit" || action === "insert" || action === "generate"
     if (!name && !(action === "insert" || action === "generate")) return
     if ((action === "type-password" || action === "type-username") && !allowTyping) return
@@ -555,8 +579,7 @@ Item {
 
   function activateSelected(action) { runAction(action, selectedEntry) }
 
-  // Alt+N / Alt+G: the query, if any, becomes the new entry's name; the
-  // terminal asks for one otherwise.
+  // Alt+N: the query, if any, becomes the new entry's name.
   function insertNew(action) {
     var typed = filterText.trim()
     runAction(action, typed !== "" ? ({ name: typed }) : null)
@@ -573,6 +596,250 @@ Item {
       var detail = String(actionStderr.text || "").replace(/\s+/g, " ").trim()
       if (exitCode !== 0) console.warn("passwordstore: action failed:", detail || ("exit " + exitCode))
     }
+  }
+
+  // --- the editor ---------------------------------------------------------
+
+  // The entry being edited ("" for a new one) and the parts of it that are
+  // not in a field: timestamps and the key: value lines the editor does not
+  // know (a url:, an otpauth:// line), which are written back as they were.
+  property string editEntry: ""
+  property string editCreated: ""
+  property string editModified: ""
+  property var editExtra: []
+  property bool editRevealed: false
+  property bool editReading: false     // decrypting: the card hides so pinentry can have the keyboard
+  property bool editBusy: false
+  property string editError: ""
+  property string readBuffer: ""
+  property string savePayload: ""
+
+  // Generator options; the defaults make a 20-character password from all
+  // four classes, which is what pass generate would do as well.
+  property int genLength: 20
+  property bool genLower: true
+  property bool genUpper: true
+  property bool genDigits: true
+  property bool genSymbols: true
+
+  // One colour per character class when the password is revealed: letters
+  // in the text colour, capitals blue, digits orange, symbols pink, in
+  // shades that read on the theme's light or dark surface. The generator's
+  // class buttons wear the same colours, which makes them the legend.
+  readonly property bool darkSurface: background.hslLightness < 0.5
+  readonly property color upperColor: darkSurface ? "#8fc7ff" : "#1a5fb4"
+  readonly property color digitColor: darkSurface ? "#ffb86c" : "#a85400"
+  readonly property color symbolColor: darkSurface ? "#ff8fa3" : "#b3123f"
+
+  function classColor(ch) {
+    if (ch >= "a" && ch <= "z") return foreground
+    if (ch >= "A" && ch <= "Z") return upperColor
+    if (ch >= "0" && ch <= "9") return digitColor
+    return symbolColor
+  }
+
+  // Rich text for the revealed password: every character wrapped in its
+  // class colour, the few characters HTML cares about escaped, spaces kept.
+  function colorize(text) {
+    var out = ""
+    for (var i = 0; i < text.length; i++) {
+      var ch = text[i]
+      var shown = ch === "&" ? "&amp;" : ch === "<" ? "&lt;" : ch === ">" ? "&gt;" : ch === " " ? "&nbsp;" : ch
+      out += "<font color=\"" + String(classColor(ch)).slice(0, 7) + "\">" + shown + "</font>"
+    }
+    return out
+  }
+
+  function formatStamp(stamp) {
+    var s = String(stamp || "")
+    return s.length >= 16 ? s.slice(0, 16).replace("T", " ") : s
+  }
+
+  readonly property string editTitle: editEntry === "" ? "New entry" : "Edit entry"
+  readonly property bool editCanSave: !editReading && !editBusy
+    && nameField.text.trim() !== "" && passwordField.text !== ""
+
+  // Open the editor: blank for a new entry (the query as the name, if any),
+  // or decrypting an existing one first.
+  function openEditor(entry, presetName) {
+    if (editReading) return
+    mode = "edit"
+    editEntry = entry ? String(entry.name) : ""
+    editCreated = ""
+    editModified = ""
+    editExtra = []
+    editRevealed = false
+    editError = ""
+    editBusy = false
+    if (entry) {
+      var parts = splitName(String(entry.name))
+      nameField.text = parts.title
+      usernameField.text = parts.username
+    } else {
+      var preset = String(presetName || "")
+      var slash = preset.lastIndexOf("/")
+      nameField.text = slash > 0 ? preset.slice(0, slash) : preset
+      usernameField.text = slash > 0 ? preset.slice(slash + 1) : ""
+    }
+    passwordField.text = ""
+    notesArea.text = ""
+    if (entry) {
+      editReading = true
+      readBuffer = ""
+      var command = [actionPath, "read", String(entry.name), "--username-keys", usernameKeys]
+      if (storeDir !== "") command.push("--store", storeDir)
+      readProcess.command = command
+      readProcess.running = true
+    } else {
+      Qt.callLater(function() { nameField.forceActiveFocus() })
+    }
+  }
+
+  // Everything typed into the editor goes, the password first. savePayload
+  // is not touched: saveEntry dismisses the card before the process has
+  // started, and onStarted still has to write it.
+  function resetEditor() {
+    passwordField.text = ""
+    notesArea.text = ""
+    nameField.text = ""
+    usernameField.text = ""
+    readBuffer = ""
+    editExtra = []
+    editEntry = ""
+    editRevealed = false
+    editError = ""
+    mode = "search"
+  }
+
+  function leaveEditor() {
+    if (editReading) return
+    resetEditor()
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function applyRead(text) {
+    var parsed
+    try { parsed = JSON.parse(String(text || "")) } catch (error) { parsed = null }
+    if (!parsed || typeof parsed !== "object") { editError = "The helper returned something unreadable"; return }
+    passwordField.text = String(parsed.password || "")
+    // The path's username is what the list shows and what save writes; an
+    // entry from before this format only has its login: line.
+    if (usernameField.text === "") usernameField.text = String(parsed.username || "")
+    notesArea.text = String(parsed.notes || "")
+    editCreated = String(parsed.created || "")
+    editModified = String(parsed.modified || "")
+    editExtra = Array.isArray(parsed.extra) ? parsed.extra.map(function(l) { return String(l) }) : []
+  }
+
+  Process {
+    id: readProcess
+    running: false
+    command: []
+    // Chunks are gathered in readBuffer and cleared after parsing; a
+    // StdioCollector would keep the decrypted JSON around until the next run.
+    stdout: SplitParser { splitMarker: ""; onRead: function(data) { root.readBuffer += data } }
+    stderr: StdioCollector { id: readStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      var text = root.readBuffer
+      root.readBuffer = ""
+      root.editReading = false
+      if (root.mode !== "edit" || !root.opened) return
+      if (exitCode === 0) root.applyRead(text)
+      else root.editError = String(readStderr.text || "").replace(/\s+/g, " ").trim() || ("Could not read " + root.editEntry)
+      Qt.callLater(function() { passwordField.forceActiveFocus() })
+    }
+  }
+
+  function generatePassword() {
+    if (genProcess.running || editReading) return
+    var classes = []
+    if (genLower) classes.push("lower")
+    if (genUpper) classes.push("upper")
+    if (genDigits) classes.push("digit")
+    if (genSymbols) classes.push("symbol")
+    if (classes.length === 0) { editError = "Pick at least one character class"; return }
+    editError = ""
+    genProcess.command = [actionPath, "generate-password", "", "--length", String(genLength), "--classes", classes.join(",")]
+    genProcess.running = true
+  }
+
+  Process {
+    id: genProcess
+    running: false
+    command: []
+    stdout: SplitParser { onRead: function(data) { if (root.mode === "edit") passwordField.text = String(data) } }
+    stderr: StdioCollector { id: genStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) root.editError = String(genStderr.text || "").replace(/\s+/g, " ").trim() || "Could not generate a password"
+    }
+  }
+
+  function validEntryName(name) {
+    return name !== "" && name[0] !== "-" && name[0] !== "/" && name[name.length - 1] !== "/"
+      && name.indexOf("..") < 0 && name.indexOf("//") < 0
+  }
+
+  // Save: the entry's name is name/username, the content goes to the
+  // helper's stdin as JSON, and the card closes like it does for every other
+  // action; the helper notifies when it is done (or not).
+  function saveEntry() {
+    if (!editCanSave) return
+    var title = nameField.text.trim().replace(/^\/+|\/+$/g, "")
+    var user = usernameField.text.trim()
+    if (user.indexOf("/") >= 0) { editError = "A username cannot contain a slash"; return }
+    var name = user !== "" ? title + "/" + user : title
+    if (!validEntryName(name)) { editError = "That name will not do as a pass entry"; return }
+    var payload = {
+      password: passwordField.text,
+      username: user,
+      notes: notesArea.text,
+      extra: editExtra,
+      created: editCreated
+    }
+    var command = [actionPath, "save", name, "--recent", recentFile, "--username-keys", usernameKeys]
+    if (storeDir !== "") command.push("--store", storeDir)
+    if (editEntry !== "" && editEntry !== name) command.push("--from", editEntry)
+    if (!notifyOnCopy) command.push("--quiet")
+    if (syncActive) command.push("--sync", "--vault", activeVaultId)
+    savePayload = JSON.stringify(payload)
+    payload = null
+    saveProcess.command = command
+    dismiss()
+    saveProcess.stdinEnabled = true
+    saveProcess.running = true
+  }
+
+  Process {
+    id: saveProcess
+    running: false
+    command: []
+    stdinEnabled: true
+    stderr: StdioCollector { id: saveStderr; waitForEnd: true }
+    // The payload is written once the process is up, then stdin is closed
+    // so pass sees the end of the entry; the copy held here goes with it.
+    onStarted: {
+      saveProcess.write(root.savePayload + "\n")
+      root.savePayload = ""
+      saveProcess.stdinEnabled = false
+    }
+    onExited: function(exitCode) {
+      root.savePayload = ""
+      if (exitCode !== 0) console.warn("passwordstore: save failed:", String(saveStderr.text || "").replace(/\s+/g, " ").trim() || ("exit " + exitCode))
+      else root.refresh()
+    }
+  }
+
+  // Keys the editor answers to after the focused field has had its turn.
+  function editKey(event) {
+    var ctrl = event.modifiers & Qt.ControlModifier
+    var alt = event.modifiers & Qt.AltModifier
+    if (event.key === Qt.Key_Escape) { leaveEditor(); return true }
+    if (editReading) return false
+    if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && ctrl) { saveEntry(); return true }
+    if (ctrl && event.key === Qt.Key_S) { saveEntry(); return true }
+    if (alt && event.key === Qt.Key_R) { editRevealed = !editRevealed; return true }
+    if (alt && event.key === Qt.Key_G) { generatePassword(); return true }
+    return false
   }
 
   // --- the setup helper -------------------------------------------------
@@ -1435,18 +1702,35 @@ Item {
     bordered: true
   }
 
+  component EditLabel: Text {
+    width: parent ? parent.width : implicitWidth
+    textFormat: Text.PlainText
+    color: root.foreground
+    opacity: 0.6
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+    topPadding: Style.space(2)
+  }
+
+  // A field of the editor: the editor's keys (Esc, Ctrl+Enter, Alt+R,
+  // Alt+G) are answered before the field sees them, everything else is
+  // typed into it.
+  component EditField: SetupField {
+    Keys.onPressed: function(event) { if (root.editKey(event)) event.accepted = true }
+  }
+
   PanelWindow {
     id: panel
     // Hide and drop the exclusive grab while a helper terminal is running
     // (gpg --full-generate-key, pkg add, first git/rclone push). Otherwise
     // the fullscreen layer eats keys and clicks meant for that terminal or
     // for whatever app is behind the scrim.
-    visible: root.opened && root.setupBusy === ""
+    visible: root.opened && root.setupBusy === "" && !root.editReading
     anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
     WlrLayershell.namespace: "omarchy-passwordstore"
     WlrLayershell.layer: WlrLayer.Overlay
-    WlrLayershell.keyboardFocus: (root.opened && root.setupBusy === "")
+    WlrLayershell.keyboardFocus: (root.opened && root.setupBusy === "" && !root.editReading)
       ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
     exclusionMode: ExclusionMode.Ignore
 
@@ -1475,8 +1759,8 @@ Item {
       // Wizard keys arrive here after the focused text field, if any, has
       // had its turn; keyCatcher below lets them through in setup mode.
       Keys.onPressed: function(event) {
-        if (root.mode !== "setup") return
-        if (root.setupKey(event)) event.accepted = true
+        if (root.mode === "setup") { if (root.setupKey(event)) event.accepted = true }
+        else if (root.mode === "edit") { if (root.editKey(event)) event.accepted = true }
       }
 
       // Type-to-filter, as the menu does: there is no text field to focus,
@@ -1530,11 +1814,12 @@ Item {
           } else if (alt && event.key === Qt.Key_O) {
             root.activateSelected("copy-otp"); event.accepted = true
           } else if (alt && event.key === Qt.Key_E) {
-            root.activateSelected("edit"); event.accepted = true
+            root.activateSelected(shift ? "edit-terminal" : "edit"); event.accepted = true
           } else if (alt && event.key === Qt.Key_N) {
             root.insertNew("insert"); event.accepted = true
           } else if (alt && event.key === Qt.Key_G) {
-            root.insertNew("generate"); event.accepted = true
+            // A new entry with a password already generated.
+            root.insertNew("insert"); root.generatePassword(); event.accepted = true
           } else if (!ctrl && !alt && event.text && event.text.length === 1
                      && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127) {
             root.setFilter(root.filterText + event.text)
@@ -1648,25 +1933,25 @@ Item {
 
                 Text {
                   width: parent.width
-                  text: row.modelData.leaf
+                  text: row.modelData.title
                   textFormat: Text.PlainText
                   color: row.hasCursor ? root.selectedText : root.foreground
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.heading
                   font.weight: Font.Medium
-                  elide: Text.ElideRight
+                  elide: Text.ElideLeft
                 }
 
                 Text {
                   width: parent.width
-                  visible: row.modelData.folder !== ""
-                  text: row.modelData.folder
+                  visible: row.modelData.username !== ""
+                  text: row.modelData.username
                   textFormat: Text.PlainText
                   color: row.hasCursor ? root.selectedText : root.foreground
                   opacity: 0.52
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.bodySmall
-                  elide: Text.ElideLeft
+                  elide: Text.ElideRight
                 }
               }
 
@@ -1752,6 +2037,288 @@ Item {
           opacity: 0.45
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
+        }
+      }
+
+      // ---------------------------------------------------------- editor
+
+      Column {
+        id: editColumn
+        anchors.fill: parent
+        anchors.topMargin: card.contentTopInset
+        anchors.rightMargin: card.contentRightInset
+        anchors.bottomMargin: card.contentBottomInset
+        anchors.leftMargin: card.contentLeftInset
+        spacing: Style.space(6)
+        visible: root.mode === "edit"
+
+        Item {
+          width: parent.width
+          height: root.headerHeight
+
+          Text {
+            anchors.left: parent.left
+            anchors.right: editVaultText.left
+            anchors.rightMargin: Style.space(8)
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.editTitle + (root.editEntry !== "" ? "  ·  " + root.editEntry : "")
+            textFormat: Text.PlainText
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.heading
+            elide: Text.ElideLeft
+          }
+          Text {
+            id: editVaultText
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.activeVault.name
+            textFormat: Text.PlainText
+            color: root.foreground
+            opacity: 0.45
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+        }
+
+        EditLabel { text: "Application, website or account" }
+        EditField {
+          id: nameField
+          placeholderText: "github.com"
+          KeyNavigation.tab: usernameField
+          KeyNavigation.backtab: notesArea
+          onAccepted: usernameField.forceActiveFocus()
+        }
+
+        EditLabel { text: "Username" }
+        EditField {
+          id: usernameField
+          placeholderText: "jack@example.com"
+          KeyNavigation.tab: passwordField
+          KeyNavigation.backtab: nameField
+          onAccepted: passwordField.forceActiveFocus()
+        }
+
+        EditLabel { text: "Password" }
+        Item {
+          width: parent.width
+          height: Math.max(passwordField.implicitHeight, revealButton.implicitHeight)
+
+          // Masked like the lock screen's field; revealed, the field's own
+          // text turns transparent and the coloured copy is drawn over it,
+          // in the same monospace font so the two line up glyph for glyph.
+          EditField {
+            id: passwordField
+            anchors.left: parent.left
+            anchors.right: revealButton.left
+            anchors.rightMargin: Style.spacing.controlGap
+            anchors.verticalCenter: parent.verticalCenter
+            password: !root.editRevealed
+            passwordCharacter: "\u2022"
+            font.family: Style.font.family
+            color: root.editRevealed ? "transparent" : root.foreground
+            selectedTextColor: root.editRevealed ? "transparent" : root.foreground
+            placeholderText: root.editReading ? "Decrypting…" : "Type or paste, or generate one"
+            cursorDelegate: Rectangle {
+              width: Math.max(1, Style.space(1))
+              color: root.foreground
+              visible: passwordField.cursorVisible
+            }
+            // Tab skips the generator controls (they are mouse and Alt+G
+            // territory) and lands in the notes.
+            KeyNavigation.tab: notesArea
+            KeyNavigation.backtab: usernameField
+            onAccepted: notesArea.forceActiveFocus()
+          }
+          Text {
+            visible: root.editRevealed
+            x: passwordField.x + passwordField.leftPadding
+            anchors.verticalCenter: passwordField.verticalCenter
+            width: Math.max(0, passwordField.width - passwordField.leftPadding - passwordField.rightPadding)
+            clip: true
+            text: root.colorize(passwordField.text)
+            textFormat: Text.RichText
+            font.family: passwordField.font.family
+            font.pixelSize: passwordField.font.pixelSize
+          }
+          SetupButton {
+            id: revealButton
+            anchors.right: generateButton.left
+            anchors.rightMargin: Style.spacing.controlGap
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: root.editRevealed ? root.eyeOffGlyph : root.eyeGlyph
+            tooltipText: root.editRevealed ? "Hide (Alt+R)" : "Reveal (Alt+R)"
+            selected: root.editRevealed
+            onClicked: root.editRevealed = !root.editRevealed
+          }
+          SetupButton {
+            id: generateButton
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Generate"
+            tooltipText: "Alt+G"
+            onClicked: root.generatePassword()
+          }
+        }
+
+        // Generator options; the class buttons double as the colour legend.
+        Row {
+          width: parent.width
+          spacing: Style.spacing.controlGap
+
+          NumberField {
+            anchors.verticalCenter: parent.verticalCenter
+            label: "Length"
+            from: 4
+            to: 128
+            value: root.genLength
+            foreground: root.foreground
+            accent: root.selectedBackground
+            fontFamily: root.fontFamily
+            onModified: function(value) { root.genLength = value }
+            Component.onCompleted: field.activeFocusOnTab = false
+          }
+          SetupButton {
+            anchors.verticalCenter: parent.verticalCenter
+            text: "a-z"
+            selected: root.genLower
+            opacity: root.genLower ? 1 : 0.5
+            onClicked: root.genLower = !root.genLower
+          }
+          SetupButton {
+            anchors.verticalCenter: parent.verticalCenter
+            text: "A-Z"
+            foreground: root.upperColor
+            selected: root.genUpper
+            opacity: root.genUpper ? 1 : 0.5
+            onClicked: root.genUpper = !root.genUpper
+          }
+          SetupButton {
+            anchors.verticalCenter: parent.verticalCenter
+            text: "0-9"
+            foreground: root.digitColor
+            selected: root.genDigits
+            opacity: root.genDigits ? 1 : 0.5
+            onClicked: root.genDigits = !root.genDigits
+          }
+          SetupButton {
+            anchors.verticalCenter: parent.verticalCenter
+            text: "#!?"
+            foreground: root.symbolColor
+            selected: root.genSymbols
+            opacity: root.genSymbols ? 1 : 0.5
+            onClicked: root.genSymbols = !root.genSymbols
+          }
+        }
+
+        EditLabel { text: "Notes" }
+        BorderSurface {
+          id: notesSurface
+          width: parent.width
+          height: Style.space(88)
+          radius: Style.cornerRadius
+          color: Style.controlFill(notesArea.activeFocus, notesArea.hovered, root.foreground, root.selectedBackground)
+          borderSpec: Border.controlSpec(notesArea.activeFocus ? "focus" : (notesArea.hovered ? "hover-cursor" : "normal"), root.foreground, root.selectedBackground)
+
+          Flickable {
+            id: notesFlick
+            anchors.fill: parent
+            anchors.margins: Math.max(1, Style.space(2))
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+
+            QQC.TextArea.flickable: QQC.TextArea {
+              id: notesArea
+              wrapMode: TextEdit.Wrap
+              textFormat: TextEdit.PlainText
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              color: root.foreground
+              selectionColor: root.selectedBackground
+              selectedTextColor: root.foreground
+              placeholderText: "Notes, recovery codes, anything else"
+              placeholderTextColor: Qt.darker(root.foreground, 1.6)
+              leftPadding: Style.spacing.controlPaddingX
+              rightPadding: Style.spacing.controlPaddingX
+              topPadding: Style.spacing.inputPaddingY
+              bottomPadding: Style.spacing.inputPaddingY
+              background: null
+              // Tab is a field hop here, not a character.
+              Keys.onPressed: function(event) {
+                if (event.key === Qt.Key_Tab) { nameField.forceActiveFocus(); event.accepted = true }
+                else if (event.key === Qt.Key_Backtab) { passwordField.forceActiveFocus(); event.accepted = true }
+                else if (root.editKey(event)) event.accepted = true
+              }
+            }
+            QQC.ScrollBar.vertical: QQC.ScrollBar {}
+          }
+        }
+
+        Text {
+          width: parent.width
+          visible: text !== ""
+          text: {
+            var bits = []
+            if (root.editCreated !== "") bits.push("Created " + root.formatStamp(root.editCreated))
+            if (root.editModified !== "") bits.push("Modified " + root.formatStamp(root.editModified))
+            if (root.editExtra.length > 0) {
+              var keys = root.editExtra.map(function(l) { return l.split(":")[0] })
+              bits.push("Kept as is: " + keys.join(", "))
+            }
+            return bits.join("  ·  ")
+          }
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          color: root.foreground
+          opacity: 0.45
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        Text {
+          width: parent.width
+          visible: root.editError !== ""
+          text: root.editError
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          color: Color.urgent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+        }
+
+        // Legend full width, then Cancel / Save, as the setup pages do.
+        Column {
+          width: parent.width
+          spacing: Style.space(8)
+          topPadding: Style.space(4)
+
+          Text {
+            id: editHint
+            width: parent.width
+            text: "Tab fields  ·  Ctrl+Enter save  ·  Alt+R reveal  ·  Alt+G generate  ·  Esc back"
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: root.foreground
+            opacity: 0.45
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+          Row {
+            id: editButtons
+            anchors.right: parent.right
+            spacing: Style.spacing.controlGap
+
+            SetupButton {
+              text: "Cancel"
+              onClicked: root.leaveEditor()
+            }
+            SetupButton {
+              text: root.editEntry !== "" ? "Save" : "Add"
+              selected: root.editCanSave
+              opacity: root.editCanSave ? 1 : 0.5
+              onClicked: root.saveEntry()
+            }
+          }
         }
       }
 
