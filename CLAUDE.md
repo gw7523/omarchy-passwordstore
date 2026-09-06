@@ -75,7 +75,14 @@ live. Never install over a live `hegjon.passwordstore` checkout.
 - Entries are `name/username` paths; `splitName` takes the last segment as
   the username. The file format `save` writes and `read` parses is in the
   helper's header comment; unknown `key: value` lines and `otpauth://` lines
-  round-trip through `extra`.
+  round-trip through `extra`. A classic `web/github.com` with a `login:`
+  inside is handled on read: the decrypted username wins, the whole path
+  becomes the name, and saving without edits keeps the path (an edit moves
+  it to name/username). `--no-overwrite` guards a new name against an
+  existing entry, since `pass insert -f` / `pass mv -f` would clobber it.
+- The clipboard sleeper is named (`exec -a "passwordstore clip sleep"` around
+  `sleep & wait`, because bash execs a lone command and loses the name) so
+  the next copy can `pkill` it and restart the timer, as pass does.
 - The search card is type-to-filter with no TextField (the menu's pattern),
   so single letters are never shortcuts there; actions are Enter plus
   modifiers, and `Tab` switches vaults. `Util.editsFilter` claims Ctrl+U

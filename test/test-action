@@ -17,6 +17,7 @@ trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/bin" "$work/state/omarchy"
 export WORK="$work"
 export XDG_STATE_HOME="$work/state"
+export PASSWORDSTORE_CLIPBOARD_HISTORY="$work/state/omarchy/clipboard-history.json"
 
 # pass: `show NAME` prints a fixture (web/site in pass's classic layout,
 # site/bob in the editor's), `otp code NAME` prints a code, `insert -m -f`
@@ -33,11 +34,12 @@ case $1 in
   show)
     case "$2" in
       site/bob) printf 'p4ss w0rd!\nusername: bob\ncreated: 2026-01-02T03:04:05+00:00\nmodified: 2026-02-03T04:05:06+00:00\nurl: https://example.com\notpauth://totp/x?secret=ABC\n\nfirst note line\nsecond\n' ;;
+      crlf/one) printf 'p4ss\r\nusername: carol\r\n\r\nhello\r\n' ;;
       *) printf 'hunter2\nlogin: alice@example.com\nurl: https://example.com\n' ;;
     esac ;;
   otp) [[ $2 == code ]] && echo 123456; exit 0 ;;
   insert) cat > "$WORK/inserted"; exit 0 ;;
-  mv) exit 0 ;;
+  mv|rm) exit 0 ;;
   edit|generate) exit 0 ;;
   *) exit 1 ;;
 esac
@@ -107,6 +109,24 @@ history=$(cat "$work/state/omarchy/clipboard-history.json")
 [[ $history != *hunter2* && $history == *"keep me"* && $history == *x.png* ]] \
   && ok "copy-password removes the password from the clipboard history, nothing else" \
   || bad "copy-password removes the password from the clipboard history, nothing else"
+
+reset
+"$ACTION" copy-password web/site --clip-time 30 --quiet >/dev/null 2>&1
+sleep 1.4
+history=$(cat "$work/state/omarchy/clipboard-history.json")
+[[ $history != *hunter2* ]] && ok "the history is scrubbed a second after the copy, not only at the clear" \
+  || bad "the history is scrubbed a second after the copy, not only at the clear"
+pkill -f '^passwordstore clip sleep' >/dev/null 2>&1; sleep 0.3
+
+reset
+"$ACTION" copy-password web/site --clip-time 2 --quiet >/dev/null 2>&1
+sleep 1.2
+"$ACTION" copy-password web/site --clip-time 2 --quiet >/dev/null 2>&1
+sleep 1.3
+[[ ! -e $work/cleared ]] && ok "a second copy restarts the clear timer" || bad "a second copy restarts the clear timer"
+sleep 1.5
+[[ -e $work/cleared ]] && ok "…and the clipboard is cleared when the new timer runs out" \
+  || bad "…and the clipboard is cleared when the new timer runs out"
 
 reset
 printf 'something else' > "$work/clipboard"
@@ -197,6 +217,10 @@ out=$("$ACTION" read web/site 2>/dev/null)
 [[ $(jq -r .username <<<"$out") == alice@example.com && $(jq -r .notes <<<"$out") == "" && $(jq -c .extra <<<"$out") == '["url: https://example.com"]' ]] \
   && ok "read: a classic entry gives its login: line as the username" || bad "read: a classic entry gives its login: line as the username"
 
+out=$("$ACTION" read crlf/one 2>/dev/null)
+[[ $(jq -r .password <<<"$out") == p4ss && $(jq -r .username <<<"$out") == carol && $(jq -r .notes <<<"$out") == hello ]] \
+  && ok "read: CRLF line endings are stripped" || bad "read: CRLF line endings are stripped"
+
 out=$("$ACTION" read missing 2>/dev/null); status=$?
 [[ $status -eq 1 && -z $out ]] && ok "read: a pass failure exits 1 with nothing on stdout" || bad "read: a pass failure exits 1 with nothing on stdout"
 
@@ -225,12 +249,28 @@ printf '{"password":"x"}' | "$ACTION" save site/bob --from site/alice --quiet >/
 grep -qx 'mv -f site/alice site/bob' "$work/pass.calls" && ok "save --from renames with pass mv first" || bad "save --from renames with pass mv first"
 
 reset
+mkdir -p "$work/exists/site"; : > "$work/exists/site/bob.gpg"
+printf '{"password":"x"}' | "$ACTION" save site/bob --store "$work/exists" --no-overwrite --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/inserted ]] && grep -q 'already exists' "$work/notify.calls" \
+  && ok "save --no-overwrite refuses an existing entry (new entry or rename target)" \
+  || bad "save --no-overwrite refuses an existing entry (new entry or rename target)"
+printf '{"password":"x"}' | "$ACTION" save site/bob --store "$work/exists" --quiet >/dev/null 2>&1
+[[ -e $work/inserted ]] && ok "…and without it an edit overwrites its own entry" || bad "…and without it an edit overwrites its own entry"
+
+reset
 printf '{"password":""}' | "$ACTION" save site/bob --quiet >/dev/null 2>&1
 [[ $? -eq 1 && ! -e $work/inserted ]] && ok "save refuses an empty password" || bad "save refuses an empty password"
 
 reset
 printf '{"password":"x"}' | "$ACTION" save site/bob --from ../x --quiet >/dev/null 2>&1
 [[ $? -eq 2 && ! -e $work/pass.calls ]] && ok "save refuses a traversal in --from" || bad "save refuses a traversal in --from"
+
+reset
+"$ACTION" delete site/bob --quiet >/dev/null 2>&1
+[[ $? -eq 0 ]] && grep -qx 'rm -f site/bob' "$work/pass.calls" && ok "delete runs pass rm -f" || bad "delete runs pass rm -f"
+reset
+"$ACTION" delete missing --quiet >/dev/null 2>&1
+[[ $? -eq 1 ]] && grep -q 'Could not delete' "$work/notify.calls" && ok "delete reports a pass failure" || bad "delete reports a pass failure"
 
 pw=$("$ACTION" generate-password "" --length 24)
 [[ ${#pw} -eq 24 ]] && ok "generate-password honours --length" || bad "generate-password honours --length"
@@ -288,6 +328,10 @@ wait_for "$work/pass.calls"; sleep 0.3
 reset; rm -f "$work/store/pushed"
 printf '{"password":"x"}' | "$ACTION" save site/bob --store "$work/store" --sync --vault personal --quiet >/dev/null 2>&1
 [[ -e $work/store/pushed ]] && ok "save --sync pushes before it returns" || bad "save --sync pushes before it returns"
+
+reset; rm -f "$work/store/pushed"
+"$ACTION" delete site/bob --store "$work/store" --sync --vault personal --quiet >/dev/null 2>&1
+[[ -e $work/store/pushed ]] && ok "delete --sync pushes too" || bad "delete --sync pushes too"
 
 reset
 "$ACTION" insert web/new --store "$work/store" >/dev/null 2>&1

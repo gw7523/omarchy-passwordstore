@@ -470,6 +470,19 @@ Item {
     cursorActive = true
   }
 
+  // Quickshell has no clipboard API; a hidden TextInput's paste() reads the
+  // Qt clipboard for us. One line of it, whitespace collapsed, joins the
+  // query.
+  function pasteIntoFilter() {
+    clipboardProbe.text = ""
+    clipboardProbe.paste()
+    var pasted = clipboardProbe.text.replace(/\s+/g, " ").trim()
+    clipboardProbe.text = ""
+    if (pasted !== "") setFilter(filterText + pasted)
+  }
+
+  TextInput { id: clipboardProbe; visible: false; width: 0; height: 0 }
+
   function select(delta) {
     if (rows.length === 0) return
     cursorActive = true
@@ -609,7 +622,10 @@ Item {
   property var editExtra: []
   property bool editRevealed: false
   property bool editReading: false     // decrypting: the card hides so pinentry can have the keyboard
-  property bool editBusy: false
+  // The name and username as read, so an unchanged entry is saved under
+  // its own path even when that path is not name/username.
+  property string editOrigTitle: ""
+  property string editOrigUser: ""
   property string editError: ""
   property string readBuffer: ""
   property string savePayload: ""
@@ -655,8 +671,10 @@ Item {
     return s.length >= 16 ? s.slice(0, 16).replace("T", " ") : s
   }
 
+  property bool deleteConfirm: false
+
   readonly property string editTitle: editEntry === "" ? "New entry" : "Edit entry"
-  readonly property bool editCanSave: !editReading && !editBusy
+  readonly property bool editCanSave: !editReading && !genProcess.running && !saveProcess.running
     && nameField.text.trim() !== "" && passwordField.text !== ""
 
   // Open the editor: blank for a new entry (the query as the name, if any),
@@ -670,11 +688,15 @@ Item {
     editExtra = []
     editRevealed = false
     editError = ""
-    editBusy = false
+    deleteConfirm = false
+    editOrigTitle = ""
+    editOrigUser = ""
     if (entry) {
       var parts = splitName(String(entry.name))
       nameField.text = parts.title
       usernameField.text = parts.username
+      editOrigTitle = parts.title
+      editOrigUser = parts.username
     } else {
       var preset = String(presetName || "")
       var slash = preset.lastIndexOf("/")
@@ -708,7 +730,38 @@ Item {
     editEntry = ""
     editRevealed = false
     editError = ""
+    deleteConfirm = false
     mode = "search"
+  }
+
+  // Delete asks first: Alt+D (or the button) turns the legend into the
+  // question and the primary button into "Yes, delete"; Esc keeps the entry.
+  function askDelete() {
+    if (editEntry === "" || editReading) return
+    deleteConfirm = true
+    editError = ""
+  }
+
+  function deleteEntry() {
+    if (!deleteConfirm || editEntry === "") return
+    var command = [actionPath, "delete", editEntry]
+    if (storeDir !== "") command.push("--store", storeDir)
+    if (!notifyOnCopy) command.push("--quiet")
+    if (syncActive) command.push("--sync", "--vault", activeVaultId)
+    deleteProcess.command = command
+    dismiss()
+    deleteProcess.running = true
+  }
+
+  Process {
+    id: deleteProcess
+    running: false
+    command: []
+    stderr: StdioCollector { id: deleteStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) console.warn("passwordstore: delete failed:", String(deleteStderr.text || "").replace(/\s+/g, " ").trim() || ("exit " + exitCode))
+      else root.refresh()
+    }
   }
 
   function leaveEditor() {
@@ -722,9 +775,21 @@ Item {
     try { parsed = JSON.parse(String(text || "")) } catch (error) { parsed = null }
     if (!parsed || typeof parsed !== "object") { editError = "The helper returned something unreadable"; return }
     passwordField.text = String(parsed.password || "")
-    // The path's username is what the list shows and what save writes; an
-    // entry from before this format only has its login: line.
-    if (usernameField.text === "") usernameField.text = String(parsed.username || "")
+    // The decrypted username is the truth. When it disagrees with the last
+    // path segment (a classic web/github.com with a login: line inside), the
+    // whole path is the name and the segment is not a username; saving
+    // without edits then keeps that path, and any edit moves the entry to
+    // name/username.
+    var inside = String(parsed.username || "")
+    if (inside !== "" && inside !== usernameField.text) {
+      nameField.text = editEntry
+      usernameField.text = inside
+      editOrigTitle = editEntry
+      editOrigUser = inside
+    } else if (usernameField.text === "" && inside !== "") {
+      usernameField.text = inside
+      editOrigUser = inside
+    }
     notesArea.text = String(parsed.notes || "")
     editCreated = String(parsed.created || "")
     editModified = String(parsed.modified || "")
@@ -787,8 +852,10 @@ Item {
     var title = nameField.text.trim().replace(/^\/+|\/+$/g, "")
     var user = usernameField.text.trim()
     if (user.indexOf("/") >= 0) { editError = "A username cannot contain a slash"; return }
-    var name = user !== "" ? title + "/" + user : title
+    var unchanged = editEntry !== "" && title === editOrigTitle && user === editOrigUser
+    var name = unchanged ? editEntry : (user !== "" ? title + "/" + user : title)
     if (!validEntryName(name)) { editError = "That name will not do as a pass entry"; return }
+    if (name !== editEntry && entries.indexOf(name) >= 0) { editError = "There is already an entry named " + name; return }
     var payload = {
       password: passwordField.text,
       username: user,
@@ -799,6 +866,8 @@ Item {
     var command = [actionPath, "save", name, "--recent", recentFile, "--username-keys", usernameKeys]
     if (storeDir !== "") command.push("--store", storeDir)
     if (editEntry !== "" && editEntry !== name) command.push("--from", editEntry)
+    // A new name must be new on disk as well; the listing could be stale.
+    if (name !== editEntry) command.push("--no-overwrite")
     if (!notifyOnCopy) command.push("--quiet")
     if (syncActive) command.push("--sync", "--vault", activeVaultId)
     savePayload = JSON.stringify(payload)
@@ -822,6 +891,9 @@ Item {
       root.savePayload = ""
       saveProcess.stdinEnabled = false
     }
+    // A process that never starts still exits (with -1), so the payload is
+    // cleared on either path; nothing else holds the entry once the fields
+    // are wiped.
     onExited: function(exitCode) {
       root.savePayload = ""
       if (exitCode !== 0) console.warn("passwordstore: save failed:", String(saveStderr.text || "").replace(/\s+/g, " ").trim() || ("exit " + exitCode))
@@ -833,10 +905,16 @@ Item {
   function editKey(event) {
     var ctrl = event.modifiers & Qt.ControlModifier
     var alt = event.modifiers & Qt.AltModifier
-    if (event.key === Qt.Key_Escape) { leaveEditor(); return true }
+    if (event.key === Qt.Key_Escape) {
+      if (deleteConfirm) deleteConfirm = false
+      else leaveEditor()
+      return true
+    }
     if (editReading) return false
+    if (deleteConfirm && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)) { deleteEntry(); return true }
     if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && ctrl) { saveEntry(); return true }
     if (ctrl && event.key === Qt.Key_S) { saveEntry(); return true }
+    if (alt && event.key === Qt.Key_D) { askDelete(); return true }
     if (alt && event.key === Qt.Key_R) { editRevealed = !editRevealed; return true }
     if (alt && event.key === Qt.Key_G) { generatePassword(); return true }
     return false
@@ -1785,6 +1863,10 @@ Item {
           } else if (Util.editsFilter(event, root.filterText)) {
             root.setFilter(Util.editedFilter(event, root.filterText))
             event.accepted = true
+          } else if (event.matches(StandardKey.Paste) || (shift && event.key === Qt.Key_Insert)) {
+            // Ctrl+V, or the Shift+Insert Omarchy's clipboard picker types
+            // after Super+V: the search line has no text field to take it.
+            root.pasteIntoFilter(); event.accepted = true
           } else if (event.key === Qt.Key_Down || (ctrl && (event.key === Qt.Key_N || event.key === Qt.Key_J))) {
             root.select(1); event.accepted = true
           } else if (event.key === Qt.Key_Up || (ctrl && (event.key === Qt.Key_P || event.key === Qt.Key_K))) {
@@ -2277,8 +2359,10 @@ Item {
 
         Text {
           width: parent.width
-          visible: root.editError !== ""
-          text: root.editError
+          visible: root.editError !== "" || root.deleteConfirm
+          text: root.deleteConfirm
+            ? "Delete " + root.editEntry + "? It is removed from this vault" + (root.syncActive ? " and pushed" : "") + "; pass keeps no copy."
+            : root.editError
           textFormat: Text.PlainText
           wrapMode: Text.WordWrap
           color: Color.urgent
@@ -2295,7 +2379,9 @@ Item {
           Text {
             id: editHint
             width: parent.width
-            text: "Tab fields  ·  Ctrl+Enter save  ·  Alt+R reveal  ·  Alt+G generate  ·  Esc back"
+            text: root.deleteConfirm
+              ? "Enter delete  ·  Esc keep"
+              : "Tab fields  ·  Ctrl+Enter save  ·  Alt+R reveal  ·  Alt+G generate" + (root.editEntry !== "" ? "  ·  Alt+D delete" : "") + "  ·  Esc back"
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
             color: root.foreground
@@ -2303,20 +2389,40 @@ Item {
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
           }
-          Row {
-            id: editButtons
-            anchors.right: parent.right
-            spacing: Style.spacing.controlGap
+          Item {
+            width: parent.width
+            height: editButtons.implicitHeight
 
             SetupButton {
-              text: "Cancel"
-              onClicked: root.leaveEditor()
+              anchors.left: parent.left
+              visible: root.editEntry !== "" && !root.deleteConfirm
+              text: "Delete"
+              foreground: Color.urgent
+              onClicked: root.askDelete()
             }
-            SetupButton {
-              text: root.editEntry !== "" ? "Save" : "Add"
-              selected: root.editCanSave
-              opacity: root.editCanSave ? 1 : 0.5
-              onClicked: root.saveEntry()
+            Row {
+              id: editButtons
+              anchors.right: parent.right
+              spacing: Style.spacing.controlGap
+
+              SetupButton {
+                text: root.deleteConfirm ? "Keep" : "Cancel"
+                onClicked: root.deleteConfirm ? (root.deleteConfirm = false) : root.leaveEditor()
+              }
+              SetupButton {
+                visible: root.deleteConfirm
+                text: "Yes, delete"
+                foreground: Color.urgent
+                selected: true
+                onClicked: root.deleteEntry()
+              }
+              SetupButton {
+                visible: !root.deleteConfirm
+                text: root.editEntry !== "" ? "Save" : "Add"
+                selected: root.editCanSave
+                opacity: root.editCanSave ? 1 : 0.5
+                onClicked: root.saveEntry()
+              }
             }
           }
         }

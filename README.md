@@ -139,7 +139,7 @@ Anything the card can do, `passwordstore-setup` does from a terminal too:
 
 | Key                      | Action                                                   |
 |--------------------------|----------------------------------------------------------|
-| any printable            | Extend the search. `Backspace`, `Ctrl+Backspace`, `Ctrl+U` edit it |
+| any printable            | Extend the search. `Backspace`, `Ctrl+Backspace`, `Ctrl+U` edit it; `Ctrl+V` / `Shift+Insert` paste into it |
 | `↑` `↓` `Ctrl+J/K/N/P`   | Move the cursor; `PageUp/Down`, `Home`, `End` jump       |
 | `Enter`                  | Copy the password; the clipboard clears after `clipTimeSec` and the history never sees it |
 | `Alt+U` / `Alt+Enter`    | Copy the username                                        |
@@ -162,10 +162,12 @@ In the editor:
 | `Alt+R`                  | Reveal or hide the password. Revealed, lower-case letters are in the text colour, capitals blue, digits orange, symbols pink; the generator's class buttons are the legend |
 | `Alt+G`                  | Generate a password with the length and classes chosen under the field |
 | `Ctrl+Enter` / `Ctrl+S`  | Save (`pass insert -m`, and `pass mv` first if the name changed), then push if the vault syncs |
+| `Alt+D`                  | Delete the entry (`pass rm`), after a question: `Enter` confirms, `Esc` keeps it |
 | `Esc`                    | Back to the search, the form wiped                       |
 
-`Ctrl+V` pastes into any field, the password one included; Omarchy's
-clipboard picker (`Super+V`) works there as well.
+`Ctrl+V` and `Shift+Insert` paste into any field, the password one included,
+and into the search line; Omarchy's clipboard picker (`Super+V`) works in
+both, since it types `Shift+Insert` once you pick an entry.
 
 ## Entries
 
@@ -187,7 +189,11 @@ url: https://github.com          ← any other key: value line is kept as it was
 Entries made by `pass insert` or another client work as they are: the
 password is the first line, the username is the first `login:` / `user:` /
 `username:` / `email:` line (`usernameKeys`) or, failing that, the bare
-second line, and everything after the first blank line is notes. Lines the
+second line, and everything after the first blank line is notes. A classic
+`web/github.com` with a `login:` inside shows `github.com` as its username
+in the list (the list cannot decrypt), but the editor reads the real one
+and keeps the path unless you change the name or username, which moves the
+entry to `name/username`. A new name never overwrites an existing entry. Lines the
 editor does not know (`url:`, an `otpauth://` line for pass-otp) are kept,
 and the card says so under the notes. `pass edit` in a terminal
 (`Alt+Shift+E`) is there for anything else.
@@ -242,7 +248,8 @@ hand:
 - `passwordstore-action <action> <entry> [...]` runs one action: `copy-password`,
   `copy-username`, `copy-otp`, `type-password`, `type-username`, `read`
   (the entry as JSON, for the editor), `save` (JSON on stdin, written with
-  `pass insert -m`), `generate-password`, `edit`, `insert` or `generate`
+  `pass insert -m`), `delete` (`pass rm -f`), `generate-password`, `edit`,
+  `insert` or `generate`
   (the last three in a terminal). Secrets travel over pipes and stdin, never
   argv, and the popup has already closed when it runs, so a typed password
   lands in the window you were in. Copies go through `wl-copy --sensitive`;
