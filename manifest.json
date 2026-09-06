@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.gw7523.passwordstore",
   "name": "Password Store",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "author": "gw7523",
   "license": "MIT",
-  "description": "pass, the standard unix password manager, as an Omarchy launcher: press a key, type to search your store by site or username, then copy or type a password, username or OTP code. Add and edit entries in a masked form with a reveal, a colour-coded readout and a generator. Copies carry the password-manager hint so the clipboard history never records them, and the clipboard is cleared after a minute. First open walks a new seat through the GPG key, pass init and how the vault syncs (local, git, rclone or a custom command).",
+  "description": "pass, the standard unix password manager, as an Omarchy launcher: press a key, type to search your store by site or username, then copy or type a password, username or OTP code. Add and edit entries in a masked form with a reveal, a colour-coded readout and a generator. Copies carry the password-manager hint so the clipboard history never records them, and the clipboard is cleared after a minute. gpg-agent can ask for passphrases with an Omarchy-styled prompt. First open walks a new seat through the GPG key, pass init and how the vault syncs (local, git, rclone or a custom command).",
   "homepage": "https://github.com/gw7523/omarchy-passwordstore",
   "repository": "https://github.com/gw7523/omarchy-passwordstore",
   "omarchy": {
@@ -60,7 +60,7 @@
         "key": "vaults",
         "type": "string",
         "label": "Vaults",
-        "description": "JSON array of vault records, one per password store: {id, name, storeDir, gpgIds, syncBackend, gitRemote, gitPullOnOpen, rcloneRemote, rcloneMode, rclonePullOnOpen, syncPushCmd, syncPullCmd}. The setup card (F2) maintains it; by hand, omarchy bar set … vaults '[…]' without --json (the array arrives as a string and is parsed back). Empty: the single store described by the keys below.",
+        "description": "JSON array of vault records, one per password store: {id, name, storeDir, gpgIds, syncBackend, gitRemote, gitPullOnOpen, rcloneRemote, rcloneMode, rclonePullOnOpen, syncPushCmd, syncPullCmd}. The setup card (F2) maintains it; by hand, omarchy bar set \u2026 vaults '[\u2026]' without --json (the array arrives as a string and is parsed back). Empty: the single store described by the keys below.",
         "defaultValue": []
       },
       {

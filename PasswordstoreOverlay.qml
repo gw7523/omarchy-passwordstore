@@ -996,6 +996,13 @@ Item {
   }
 
   function handleSetupResult(op, parsed) {
+    if (op === "pinentry") {
+      if (parsed && parsed.ok) {
+        setupNote = parsed.pinentry === "omarchy" ? "gpg-agent now asks with Omarchy's prompt." : "gpg-agent is back on its default prompt."
+        runSetup("status", [], "", draft)
+      } else setupError = String((parsed && parsed.error) || "Could not change the passphrase prompt")
+      return
+    }
     if (parsed.error) {
       if (op === "status") console.warn("passwordstore: status:", parsed.error)
       else setupError = String(parsed.error)
@@ -1471,6 +1478,13 @@ Item {
     return (k === "secret" || k === "public") && gpgImportKind !== "" && k !== gpgImportKind
   }
 
+  // The passphrase prompt gpg-agent uses: pinentry-omarchy (the shell's
+  // look) or whatever gpg-agent.conf names. Toggled from the GPG page.
+  readonly property string pinentryState: status && status.pinentry ? String(status.pinentry) : ""
+  function togglePinentry() {
+    runSetup("pinentry", [pinentryState === "omarchy" ? "--disable" : "--enable"], "", draft)
+  }
+
   function generateKey() {
     runSetup("gpg-generate", [], "Waiting for gpg --full-generate-key in the terminal…", draft)
   }
@@ -1593,6 +1607,7 @@ Item {
     if (setupStep === 3 && letter === "g") { generateKey(); return true }
     if (setupStep === 3 && letter === "i") { beginImport("secret"); return true }
     if (setupStep === 3 && letter === "u") { beginImport("public"); return true }
+    if (setupStep === 3 && letter === "p" && !gpgImporting) { togglePinentry(); return true }
     if (setupStep === 4 && letter === "r") { reencrypt(); return true }
     if (setupStep === 5 && letter === "p") { togglePull(); return true }
     if (setupStep === 5 && letter === "m" && setupBackend === "rclone") {
@@ -1641,7 +1656,7 @@ Item {
       case 2: return "Space select  ·  Enter install  ·  S skip"
       case 3: return gpgImporting
         ? "Enter import  ·  Esc back to the list"
-        : "↑↓ move  ·  Space select  ·  Enter continue  ·  G generate  ·  I private key  ·  U public key  ·  F5 rescan"
+        : "↑↓ move  ·  Space select  ·  Enter continue  ·  G generate  ·  I private key  ·  U public key  ·  P prompt  ·  F5 rescan"
       case 4: return reencryptOffered ? "Enter keep the store's keys  ·  R re-encrypt" : "Enter continue"
       default: return "1–4 or ↑↓ backend  ·  Tab fields  ·  P pull on open" + (setupBackend === "rclone" ? "  ·  M copy/sync" : "") + "  ·  Enter apply"
     }
@@ -2648,6 +2663,21 @@ Item {
               width: (parent.width - parent.columnSpacing) / 2
               onClicked: root.beginImport("public")
             }
+          }
+
+          // The passphrase prompt: gpg-agent's default is the GNOME one;
+          // pinentry-omarchy asks the way the lock screen does.
+          Toggle {
+            width: parent.width
+            visible: !root.gpgImporting && root.pinentryState !== ""
+            label: "Ask for passphrases with Omarchy's prompt"
+            description: root.pinentryState === "omarchy" ? "gpg-agent uses pinentry-omarchy (P toggles)"
+              : (root.pinentryState === "other" ? "gpg-agent.conf names another pinentry (P switches)" : "gpg-agent's default prompt (P switches)")
+            checked: root.pinentryState === "omarchy"
+            foreground: root.foreground
+            accent: root.selectedBackground
+            fontFamily: root.fontFamily
+            onClicked: root.togglePinentry()
           }
         }
 
