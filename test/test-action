@@ -39,8 +39,7 @@ case $1 in
     esac ;;
   otp) [[ $2 == code ]] && echo 123456; exit 0 ;;
   insert) cat > "$WORK/inserted"; exit 0 ;;
-  mv|rm) exit 0 ;;
-  edit|generate) exit 0 ;;
+  mv|rm|edit) exit 0 ;;
   *) exit 1 ;;
 esac
 SHIM
@@ -334,25 +333,8 @@ reset; rm -f "$work/store/pushed"
 [[ -e $work/store/pushed ]] && ok "delete --sync pushes too" || bad "delete --sync pushes too"
 
 reset
-"$ACTION" insert web/new --store "$work/store" >/dev/null 2>&1
-wait_for "$work/pass.calls" && grep -qx 'insert web/new' "$work/pass.calls" && ok "insert runs pass insert with the name" \
-  || bad "insert runs pass insert with the name"
-
-reset
-"$ACTION" generate web/new --store "$work/store" --clip-time 9 >/dev/null 2>&1
-wait_for "$work/pass.calls" && grep -qx 'generate -c web/new' "$work/pass.calls" && ok "generate runs pass generate -c" \
-  || bad "generate runs pass generate -c"
-
-reset
-"$ACTION" insert "" --store "$work/store" </dev/null >/dev/null 2>&1
-[[ $? -eq 0 ]] && ok "insert without a name is accepted (the terminal asks for one)" \
-  || bad "insert without a name is accepted (the terminal asks for one)"
-sleep 0.3
-[[ ! -e $work/pass.calls ]] && ok "…and pass is not run with an empty name" || bad "…and pass is not run with an empty name"
-
-reset
 "$ACTION" copy-password "" >/dev/null 2>&1
-[[ $? -eq 2 ]] && ok "other actions still need a name" || bad "other actions still need a name"
+[[ $? -eq 2 ]] && ok "every action but generate-password needs a name" || bad "every action but generate-password needs a name"
 
 echo
 printf '%d passed, %d failed\n' "$passed" "$failed"

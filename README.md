@@ -248,9 +248,8 @@ hand:
 - `passwordstore-action <action> <entry> [...]` runs one action: `copy-password`,
   `copy-username`, `copy-otp`, `type-password`, `type-username`, `read`
   (the entry as JSON, for the editor), `save` (JSON on stdin, written with
-  `pass insert -m`), `delete` (`pass rm -f`), `generate-password`, `edit`,
-  `insert` or `generate`
-  (the last three in a terminal). Secrets travel over pipes and stdin, never
+  `pass insert -m`), `delete` (`pass rm -f`), `generate-password` or `edit`
+  (in a terminal). Secrets travel over pipes and stdin, never
   argv, and the popup has already closed when it runs, so a typed password
   lands in the window you were in. Copies go through `wl-copy --sensitive`;
   the helper clears the clipboard after `clipTimeSec` and scrubs

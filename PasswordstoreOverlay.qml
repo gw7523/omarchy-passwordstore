@@ -1766,14 +1766,14 @@ Item {
     }
   }
 
-  component SetupField: TextField {
+  component CardField: TextField {
     width: parent ? parent.width : implicitWidth
     foreground: root.foreground
     accent: root.selectedBackground
     font.family: root.fontFamily
   }
 
-  component SetupButton: Button {
+  component CardButton: Button {
     foreground: root.foreground
     accent: root.selectedBackground
     fontFamily: root.fontFamily
@@ -1793,7 +1793,7 @@ Item {
   // A field of the editor: the editor's keys (Esc, Ctrl+Enter, Alt+R,
   // Alt+G) are answered before the field sees them, everything else is
   // typed into it.
-  component EditField: SetupField {
+  component EditField: CardField {
     Keys.onPressed: function(event) { if (root.editKey(event)) event.accepted = true }
   }
 
@@ -2223,7 +2223,7 @@ Item {
             font.family: passwordField.font.family
             font.pixelSize: passwordField.font.pixelSize
           }
-          SetupButton {
+          CardButton {
             id: revealButton
             anchors.right: generateButton.left
             anchors.rightMargin: Style.spacing.controlGap
@@ -2233,7 +2233,7 @@ Item {
             selected: root.editRevealed
             onClicked: root.editRevealed = !root.editRevealed
           }
-          SetupButton {
+          CardButton {
             id: generateButton
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
@@ -2260,14 +2260,14 @@ Item {
             onModified: function(value) { root.genLength = value }
             Component.onCompleted: field.activeFocusOnTab = false
           }
-          SetupButton {
+          CardButton {
             anchors.verticalCenter: parent.verticalCenter
             text: "a-z"
             selected: root.genLower
             opacity: root.genLower ? 1 : 0.5
             onClicked: root.genLower = !root.genLower
           }
-          SetupButton {
+          CardButton {
             anchors.verticalCenter: parent.verticalCenter
             text: "A-Z"
             foreground: root.upperColor
@@ -2275,7 +2275,7 @@ Item {
             opacity: root.genUpper ? 1 : 0.5
             onClicked: root.genUpper = !root.genUpper
           }
-          SetupButton {
+          CardButton {
             anchors.verticalCenter: parent.verticalCenter
             text: "0-9"
             foreground: root.digitColor
@@ -2283,7 +2283,7 @@ Item {
             opacity: root.genDigits ? 1 : 0.5
             onClicked: root.genDigits = !root.genDigits
           }
-          SetupButton {
+          CardButton {
             anchors.verticalCenter: parent.verticalCenter
             text: "#!?"
             foreground: root.symbolColor
@@ -2393,7 +2393,7 @@ Item {
             width: parent.width
             height: editButtons.implicitHeight
 
-            SetupButton {
+            CardButton {
               anchors.left: parent.left
               visible: root.editEntry !== "" && !root.deleteConfirm
               text: "Delete"
@@ -2405,18 +2405,18 @@ Item {
               anchors.right: parent.right
               spacing: Style.spacing.controlGap
 
-              SetupButton {
+              CardButton {
                 text: root.deleteConfirm ? "Keep" : "Cancel"
                 onClicked: root.deleteConfirm ? (root.deleteConfirm = false) : root.leaveEditor()
               }
-              SetupButton {
+              CardButton {
                 visible: root.deleteConfirm
                 text: "Yes, delete"
                 foreground: Color.urgent
                 selected: true
                 onClicked: root.deleteEntry()
               }
-              SetupButton {
+              CardButton {
                 visible: !root.deleteConfirm
                 text: root.editEntry !== "" ? "Save" : "Add"
                 selected: root.editCanSave
@@ -2511,12 +2511,12 @@ Item {
               : "The vault's name and directory. Moving the directory here does not move the files."
             opacity: 0.7
           }
-          SetupField {
+          CardField {
             id: vaultNameField
             placeholderText: "Name, e.g. Personal or Shared"
             onAccepted: root.setupPrimary()
           }
-          SetupField {
+          CardField {
             id: vaultDirField
             placeholderText: "~/.password-store"
             onAccepted: root.setupPrimary()
@@ -2603,7 +2603,7 @@ Item {
                 : "Private (secret) key. This seat will be able to decrypt. Export with gpg --export-secret-keys --armor. pinentry asks for the passphrase if the file has one."
               opacity: 0.7
             }
-            SetupField {
+            CardField {
               id: importPathField
               placeholderText: root.gpgImportKind === "public" ? "~/public.asc" : "~/secret.asc"
               onAccepted: root.setupPrimary()
@@ -2628,22 +2628,22 @@ Item {
             rowSpacing: Style.spacing.controlGap
             topPadding: Style.space(8)
             visible: !root.gpgImporting
-            SetupButton {
+            CardButton {
               text: "Generate a key"
               width: (parent.width - parent.columnSpacing) / 2
               onClicked: root.generateKey()
             }
-            SetupButton {
+            CardButton {
               text: "Rescan"
               width: (parent.width - parent.columnSpacing) / 2
               onClicked: root.runSetup("gpg-list", [], "", root.draft)
             }
-            SetupButton {
+            CardButton {
               text: "Import private key"
               width: (parent.width - parent.columnSpacing) / 2
               onClicked: root.beginImport("secret")
             }
-            SetupButton {
+            CardButton {
               text: "Import public key"
               width: (parent.width - parent.columnSpacing) / 2
               onClicked: root.beginImport("public")
@@ -2677,7 +2677,7 @@ Item {
           Row {
             spacing: Style.spacing.controlGap
             visible: root.storeExists && root.selectedGpg.length > 0
-            SetupButton {
+            CardButton {
               text: root.reencryptOffered ? "Re-encrypt for the selected keys" : "Re-encrypt for the selected keys instead"
               onClicked: root.reencryptOffered ? root.reencrypt() : root.runInit(false)
             }
@@ -2716,7 +2716,7 @@ Item {
               opacity: 0.7
             }
 
-            SetupField {
+            CardField {
               id: gitRemoteField
               visible: root.setupBackend === "git"
               placeholderText: "git@github.com:you/pass.git  or  https://…"
@@ -2729,7 +2729,7 @@ Item {
               opacity: 0.7
             }
 
-            SetupField {
+            CardField {
               id: rcloneRemoteField
               visible: root.setupBackend === "rclone"
               placeholderText: "remote:bucket/pass"
@@ -2742,13 +2742,13 @@ Item {
               opacity: 0.7
             }
 
-            SetupField {
+            CardField {
               id: pushCmdField
               visible: root.setupBackend === "custom"
               placeholderText: "push command, e.g. git push  or  rsync -a \"$STORE/\" host:pass/"
               onAccepted: root.setupPrimary()
             }
-            SetupField {
+            CardField {
               id: pullCmdField
               visible: root.setupBackend === "custom"
               placeholderText: "pull command (optional)"
@@ -2799,14 +2799,14 @@ Item {
             anchors.right: parent.right
             spacing: Style.spacing.controlGap
 
-            SetupButton {
+            CardButton {
               text: "Back"
               visible: root.gpgImporting
                 || root.setupStep > 1
                 || (root.setupStep === 1 && (root.vaultsOnRecord || root.storeUsable))
               onClicked: root.setupBack()
             }
-            SetupButton {
+            CardButton {
               text: root.setupPrimaryLabel
               selected: root.setupPrimaryEnabled
               opacity: root.setupPrimaryEnabled ? 1 : 0.5
