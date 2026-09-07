@@ -123,6 +123,10 @@ Item {
   readonly property string usernameKeys: String(setting("usernameKeys", "login,user,username,email")).trim()
   readonly property bool allowTyping: boolSetting("allowTyping", true)
   readonly property bool notifyOnCopy: boolSetting("notifyOnCopy", true)
+  // name/username paths (github.com/jack), or pass's classic folder/entry
+  // layout where the last segment is the entry and the username lives
+  // inside the file.
+  readonly property bool usernameInPath: boolSetting("usernameInPath", true)
 
   // --- vaults -----------------------------------------------------------
 
@@ -409,16 +413,18 @@ Item {
     return score
   }
 
-  // An entry is stored as name/username (github.com/jack); a bare name has
-  // no username. The last path segment is the username, whatever is before
-  // it the application, website or account name.
+  // With usernameInPath an entry is stored as name/username
+  // (github.com/jack): the last path segment is the username, whatever is
+  // before it the application, website or account name. Without it the
+  // last segment is the entry (pass's classic web/github.com) and the row
+  // shows the folder under it; the username is only inside the file.
   function splitName(name) {
     var slash = name.lastIndexOf("/")
-    return {
-      name: name,
-      title: slash >= 0 ? name.slice(0, slash) : name,
-      username: slash >= 0 ? name.slice(slash + 1) : ""
+    if (usernameInPath) {
+      var user = slash >= 0 ? name.slice(slash + 1) : ""
+      return { name: name, title: slash >= 0 ? name.slice(0, slash) : name, username: user, subtitle: user }
     }
+    return { name: name, title: slash >= 0 ? name.slice(slash + 1) : name, username: "", subtitle: slash >= 0 ? name.slice(0, slash) : "" }
   }
 
   // The card's rows. Without a filter the recent entries come first, then the
@@ -693,13 +699,14 @@ Item {
     editOrigUser = ""
     if (entry) {
       var parts = splitName(String(entry.name))
-      nameField.text = parts.title
+      // Classic layout: the whole path is the name, the file has the username.
+      nameField.text = usernameInPath ? parts.title : String(entry.name)
       usernameField.text = parts.username
-      editOrigTitle = parts.title
+      editOrigTitle = nameField.text
       editOrigUser = parts.username
     } else {
       var preset = String(presetName || "")
-      var slash = preset.lastIndexOf("/")
+      var slash = usernameInPath ? preset.lastIndexOf("/") : -1
       nameField.text = slash > 0 ? preset.slice(0, slash) : preset
       usernameField.text = slash > 0 ? preset.slice(slash + 1) : ""
     }
@@ -853,7 +860,10 @@ Item {
     var user = usernameField.text.trim()
     if (user.indexOf("/") >= 0) { editError = "A username cannot contain a slash"; return }
     var unchanged = editEntry !== "" && title === editOrigTitle && user === editOrigUser
-    var name = unchanged ? editEntry : (user !== "" ? title + "/" + user : title)
+    var name = unchanged || !usernameInPath ? (editEntry !== "" ? editEntry : title)
+      : (user !== "" ? title + "/" + user : title)
+    // Classic layout: a renamed entry keeps its username inside the file.
+    if (!usernameInPath && editEntry !== "" && title !== editOrigTitle) name = title
     if (!validEntryName(name)) { editError = "That name will not do as a pass entry"; return }
     if (name !== editEntry && entries.indexOf(name) >= 0) { editError = "There is already an entry named " + name; return }
     var payload = {
@@ -2041,14 +2051,14 @@ Item {
 
                 Text {
                   width: parent.width
-                  visible: row.modelData.username !== ""
-                  text: row.modelData.username
+                  visible: row.modelData.subtitle !== ""
+                  text: row.modelData.subtitle
                   textFormat: Text.PlainText
                   color: row.hasCursor ? root.selectedText : root.foreground
                   opacity: 0.52
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.bodySmall
-                  elide: Text.ElideRight
+                  elide: root.usernameInPath ? Text.ElideRight : Text.ElideLeft
                 }
               }
 

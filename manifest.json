@@ -53,7 +53,8 @@
       "rcloneMode": "copy",
       "rclonePullOnOpen": true,
       "syncPushCmd": "",
-      "syncPullCmd": ""
+      "syncPullCmd": "",
+      "usernameInPath": true
     },
     "schema": [
       {
@@ -93,6 +94,13 @@
         "label": "Username field names",
         "description": "Comma-separated keys, matched case-insensitively against the 'key: value' lines of an entry. Falls back to the second line of the entry.",
         "defaultValue": "login,user,username,email"
+      },
+      {
+        "key": "usernameInPath",
+        "type": "boolean",
+        "label": "Store entries as name/username",
+        "description": "On: an entry's last path segment is its username (github.com/jack), so the list shows both without decrypting and the editor names new entries that way. Off: pass's classic folder/entry layout; the row shows the folder under the entry and the username stays inside the file.",
+        "defaultValue": true
       },
       {
         "key": "allowTyping",

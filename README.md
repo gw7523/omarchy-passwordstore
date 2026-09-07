@@ -213,7 +213,9 @@ second line, and everything after the first blank line is notes. A classic
 `web/github.com` with a `login:` inside shows `github.com` as its username
 in the list (the list cannot decrypt), but the editor reads the real one
 and keeps the path unless you change the name or username, which moves the
-entry to `name/username`. A new name never overwrites an existing entry. Lines the
+entry to `name/username`. A new name never overwrites an existing entry. A store laid out the classic
+way throughout is happier with `usernameInPath` off (Settings): rows show
+`folder` under `entry` as before, and nothing is ever read as a username. Lines the
 editor does not know (`url:`, an `otpauth://` line for pass-otp) are kept,
 and the card says so under the notes. `pass edit` in a terminal
 (`Alt+Shift+E`) is there for anything else.
@@ -240,6 +242,7 @@ string, which both the card and the helper read back as the array.
 | `activeVaultId`  | *(empty)*                    | The vault the card searches; the first one when empty. `Tab` changes it. |
 | `clipTimeSec`    | `60`                         | Seconds until a copied password, username or OTP code is cleared from the clipboard. The value is copied with the password-manager hint, so the clipboard history never records it; should an older `wl-copy` have let it in, it is removed from the history file at the same moment. Also `PASSWORD_STORE_CLIP_TIME` for the terminal actions. |
 | `usernameKeys`   | `login,user,username,email`  | Field names that hold the username, matched case-insensitively.        |
+| `usernameInPath` | `true`                       | Entries are `name/username` (the list shows both, the editor names new entries that way). `false` keeps pass's classic `folder/entry` layout: the row shows the folder under the entry, and the username lives only inside the file. |
 | `allowTyping`    | `true`                       | Enable `Ctrl+Enter` / `Ctrl+Shift+Enter` (needs `wtype`).               |
 | `notifyOnCopy`   | `true`                       | Notify when something was copied, naming the entry and its username. Failures are always notified.         |
 
