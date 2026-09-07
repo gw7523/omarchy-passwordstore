@@ -110,7 +110,33 @@ printf '{"ok": true, "pin": "x"}' > "$work/answer.json"
 out=$(talk 'SETERROR wrong\nGETPIN\nGETPIN\nBYE\n')
 [[ $(jq -r .error <<<"$(cat "$work/request.json")") == "" ]] && ok "SETERROR is cleared after a GETPIN" || bad "SETERROR is cleared after a GETPIN"
 
-[[ -z $(ls "$work/run") ]] && ok "the socket directory is cleaned up" || bad "the socket directory is cleaned up"
+[[ -z $(find "$work/run" -mindepth 1 -maxdepth 1 -name "pinentry-omarchy.*") ]] && ok "the socket directory is cleaned up" || bad "the socket directory is cleaned up"
+
+# --- lockout ------------------------------------------------------------------
+
+"$PINENTRY" --set-policy '{"attempts": 3, "lockoutSec": 2, "windowSec": 600}' >/dev/null
+"$PINENTRY" --unlock-ok >/dev/null   # the "SETERROR wrong" test above counted one
+[[ $(jq -r .attempts <<<"$("$PINENTRY" --lockout-status)") == 3 ]] && ok "lockout: --set-policy is read back" || bad "lockout: --set-policy is read back"
+reset; printf '{"ok": true, "pin": "x"}' > "$work/answer.json"
+talk 'SETERROR Bad Passphrase (try 2 of 3)\nGETPIN\nSETERROR Bad Passphrase (try 3 of 3)\nGETPIN\nBYE\n' >/dev/null
+[[ $(jq -r .failures <<<"$("$PINENTRY" --lockout-status)") == 2 ]] && ok "lockout: every SETERROR about a bad passphrase counts" \
+  || bad "lockout: every SETERROR about a bad passphrase counts"
+out=$("$PINENTRY" --unlock-failed)
+[[ $(jq -r .locked <<<"$out") == true && $(jq -r .remaining <<<"$out") -ge 1 ]] && ok "lockout: the third failure locks (reported by the helper)" \
+  || bad "lockout: the third failure locks (reported by the helper)"
+reset; printf '{"ok": true, "pin": "x"}' > "$work/answer.json"
+out=$(talk 'GETPIN\nBYE\n')
+grep -q '^ERR 83886179' <<<"$out" && ok "lockout: GETPIN while locked is cancelled" || bad "lockout: GETPIN while locked is cancelled"
+grep -q '^D ' <<<"$out" && bad "lockout: …and no pin is taken" || ok "lockout: …and no pin is taken"
+[[ $(jq -r .mode <<<"$(cat "$work/request.json")") == message && $(jq -r .description <<<"$(cat "$work/request.json")") == *"Try again in"* ]] \
+  && ok "lockout: the prompt shows the wait as a message" || bad "lockout: the prompt shows the wait as a message"
+sleep 2.2
+[[ $(jq -r .locked <<<"$("$PINENTRY" --lockout-status)") == false ]] && ok "lockout: it expires" || bad "lockout: it expires"
+"$PINENTRY" --unlock-failed >/dev/null; "$PINENTRY" --unlock-failed >/dev/null; out=$("$PINENTRY" --unlock-failed)
+[[ $(jq -r .remaining <<<"$out") -ge 7 ]] && ok "lockout: the second lockout is four times longer" || bad "lockout: the second lockout is four times longer"
+out=$("$PINENTRY" --unlock-ok)
+[[ $(jq -r .locked <<<"$out") == false && $(jq -r .tier <<<"$out") == 0 ]] && ok "lockout: --unlock-ok clears the lock and the tier" || bad "lockout: --unlock-ok clears the lock and the tier"
+[[ $(stat -c %a "$work/run/pinentry-omarchy/lockout.json") == 600 ]] && ok "lockout: state is private (600)" || bad "lockout: state is private (600)"
 
 echo
 printf '%d passed, %d failed\n' "$passed" "$failed"

@@ -54,7 +54,10 @@
       "rclonePullOnOpen": true,
       "syncPushCmd": "",
       "syncPullCmd": "",
-      "usernameInPath": true
+      "usernameInPath": true,
+      "unlockAttempts": 5,
+      "unlockLockoutSec": 30,
+      "lockSessionOnLockout": false
     },
     "schema": [
       {
@@ -168,6 +171,33 @@
         "label": "custom: pull command",
         "description": "Run with bash -lc in the store when the card opens. May be empty.",
         "defaultValue": ""
+      },
+      {
+        "key": "unlockAttempts",
+        "type": "integer",
+        "label": "Wrong passphrases before a lockout",
+        "description": "Counted by pinentry-omarchy across requests within ten minutes; the card and the helper refuse to decrypt while locked.",
+        "min": 2,
+        "max": 20,
+        "step": 1,
+        "defaultValue": 5
+      },
+      {
+        "key": "unlockLockoutSec",
+        "type": "integer",
+        "label": "First lockout (seconds)",
+        "description": "Each further lockout is four times longer, up to thirty minutes. A decrypt that works resets everything.",
+        "min": 10,
+        "max": 600,
+        "step": 10,
+        "defaultValue": 30
+      },
+      {
+        "key": "lockSessionOnLockout",
+        "type": "boolean",
+        "label": "Lock the session at the longest lockout",
+        "description": "Off by default. On, reaching the thirty-minute tier also runs omarchy-lock-screen, on the theory that the seat is not in its owner's hands.",
+        "defaultValue": false
       }
     ]
   },

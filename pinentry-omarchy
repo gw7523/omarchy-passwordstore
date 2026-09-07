@@ -15,6 +15,16 @@ Point gpg-agent at it with `pinentry-program /path/to/pinentry-omarchy` in
 Test hook: PINENTRY_OMARCHY_PROMPT names a command run in place of
 Quickshell; it receives the same environment and must write the result JSON
 to the socket.
+
+Lockout: gpg-agent gives a passphrase three tries per request and nothing
+limits the next request, so wrong tries are counted here (every SETERROR
+that reports a bad passphrase, plus what passwordstore-action reports with
+--unlock-failed, since the third try of a request is never reported back).
+Too many within the window locks the prompt for an escalating time; GETPIN
+then shows the wait and answers "cancelled". passwordstore-action clears
+the count with --unlock-ok after a decrypt that worked. State lives in
+$XDG_RUNTIME_DIR (never on disk); the policy file next to it is written by
+passwordstore-setup lockout-policy from the plugin's settings.
 """
 
 import json
@@ -32,6 +42,97 @@ ERR_UNKNOWN_CMD = 83886355    # GPG_ERR_ASS_UNKNOWN_CMD
 ERR_TIMEOUT = 83886142        # GPG_ERR_TIMEOUT
 
 PLUGIN_DIR = os.path.dirname(os.path.realpath(__file__))
+
+# --- lockout ---------------------------------------------------------------
+
+DEFAULT_POLICY = {"attempts": 5, "windowSec": 600, "lockoutSec": 30, "maxLockoutSec": 1800, "lockSession": False}
+
+
+def runtime_dir():
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+    root = os.path.join(runtime, "pinentry-omarchy")
+    os.makedirs(root, mode=0o700, exist_ok=True)
+    return root
+
+
+def read_json(path, fallback):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else fallback
+    except (OSError, ValueError):
+        return fallback
+
+
+def write_json(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def policy():
+    p = dict(DEFAULT_POLICY)
+    p.update({k: v for k, v in read_json(os.path.join(runtime_dir(), "policy.json"), {}).items() if k in p})
+    return p
+
+
+def lockout_state():
+    return read_json(os.path.join(runtime_dir(), "lockout.json"), {"failures": [], "lockedUntil": 0, "tier": 0})
+
+
+def save_lockout(state):
+    write_json(os.path.join(runtime_dir(), "lockout.json"), state)
+
+
+def lockout_status(now=None):
+    """{locked, remaining, failures, until, tier}."""
+    now = time.time() if now is None else now
+    p = policy()
+    st = lockout_state()
+    failures = [t for t in st.get("failures", []) if isinstance(t, (int, float)) and now - t < p["windowSec"]]
+    until = float(st.get("lockedUntil", 0) or 0)
+    locked = until > now
+    return {"locked": locked, "remaining": int(until - now) if locked else 0,
+            "failures": len(failures), "until": int(until) if locked else 0, "tier": int(st.get("tier", 0)),
+            "attempts": p["attempts"]}
+
+
+def record_failure():
+    """One wrong passphrase. Returns the status afterwards."""
+    now = time.time()
+    p = policy()
+    st = lockout_state()
+    failures = [t for t in st.get("failures", []) if isinstance(t, (int, float)) and now - t < p["windowSec"]]
+    failures.append(now)
+    st["failures"] = failures
+    if len(failures) >= p["attempts"] and float(st.get("lockedUntil", 0) or 0) <= now:
+        tier = int(st.get("tier", 0))
+        seconds = min(p["lockoutSec"] * (4 ** tier), p["maxLockoutSec"])
+        st["lockedUntil"] = now + seconds
+        st["tier"] = tier + 1
+        st["failures"] = []
+        if p["lockSession"] and seconds >= p["maxLockoutSec"]:
+            # The seat is probably not in its owner's hands.
+            try:
+                subprocess.Popen(["omarchy-lock-screen"], stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError:
+                pass
+    save_lockout(st)
+    return lockout_status(now)
+
+
+def record_success():
+    save_lockout({"failures": [], "lockedUntil": 0, "tier": 0})
+    return lockout_status()
+
+
+def format_remaining(seconds):
+    seconds = max(0, int(seconds))
+    return "%d:%02d" % (seconds // 60, seconds % 60)
+
 PROMPT_QML = os.path.join(PLUGIN_DIR, "pinentry", "shell.qml")
 SHELL_DIR = os.path.join(os.environ.get("OMARCHY_PATH", "/usr/share/omarchy"), "shell")
 
@@ -210,6 +311,16 @@ class Pinentry:
     # --- commands ---------------------------------------------------------
 
     def getpin(self):
+        status = lockout_status()
+        if status["locked"]:
+            # Show the wait as a plain message, then tell gpg-agent no.
+            saved = (self.desc, self.title)
+            self.desc = "Too many wrong passphrases. Try again in %s." % format_remaining(status["remaining"])
+            self.title = "Locked"
+            self.ask("message", True)
+            self.desc, self.title = saved
+            self.send("ERR %d Operation cancelled <Pinentry>" % ERR_CANCELLED)
+            return
         result = self.ask("getpin")
         if result is None or not result.get("ok"):
             if result and result.get("timeout"):
@@ -271,7 +382,11 @@ class Pinentry:
         elif cmd == "SETTITLE":
             self.title = arg; self.send("OK")
         elif cmd == "SETERROR":
-            self.error = arg; self.send("OK")
+            self.error = arg
+            # "Bad Passphrase (try 2 of 3)": the previous try failed.
+            if "bad passphrase" in arg.lower() or "wrong" in arg.lower():
+                record_failure()
+            self.send("OK")
         elif cmd == "SETOK":
             self.ok = mnemonic(arg); self.send("OK")
         elif cmd == "SETCANCEL":
@@ -314,6 +429,29 @@ class Pinentry:
 def main():
     if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-v"):
         print("pinentry-omarchy " + VERSION)
+        return 0
+    # The lockout side door for passwordstore-action and -setup; JSON out.
+    if len(sys.argv) > 1 and sys.argv[1] == "--lockout-status":
+        print(json.dumps(lockout_status()))
+        return 0
+    if len(sys.argv) > 1 and sys.argv[1] == "--unlock-failed":
+        print(json.dumps(record_failure()))
+        return 0
+    if len(sys.argv) > 1 and sys.argv[1] == "--unlock-ok":
+        print(json.dumps(record_success()))
+        return 0
+    if len(sys.argv) > 1 and sys.argv[1] == "--set-policy":
+        # --set-policy '{"attempts":5,...}': unknown keys are dropped.
+        try:
+            wanted = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
+        except ValueError:
+            wanted = {}
+        p = dict(DEFAULT_POLICY)
+        for k in p:
+            if k in wanted:
+                p[k] = bool(wanted[k]) if isinstance(p[k], bool) else max(1, int(wanted[k]))
+        write_json(os.path.join(runtime_dir(), "policy.json"), p)
+        print(json.dumps(p))
         return 0
     entry = Pinentry()
     entry.send("OK Pleased to meet you")

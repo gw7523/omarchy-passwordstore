@@ -155,6 +155,22 @@ socket in `$XDG_RUNTIME_DIR` and on to gpg-agent, never through argv or a
 file. `passwordstore-setup pinentry [--enable|--disable]` reports or changes
 the setting. Needs Quickshell (`qs`), which Omarchy ships.
 
+## Wrong passphrases
+
+gpg-agent gives a passphrase three tries per request and nothing stops the
+next request from starting three more, so `pinentry-omarchy` counts them:
+every "Bad Passphrase" gpg reports to it, and every decrypt the card
+attempts that fails on the passphrase (the third try of a request is never
+reported back, so `passwordstore-action` tells it). Five wrong ones within
+ten minutes lock the prompt for 30 s, the next lockout four times as long,
+up to thirty minutes; a decrypt that works resets everything. While locked
+the card's legend shows the wait, nothing that decrypts is attempted, and
+gpg-agent's own prompt is answered with a message instead of a field. The
+count lives in `$XDG_RUNTIME_DIR`, never on disk. `unlockAttempts`,
+`unlockLockoutSec` and `lockSessionOnLockout` (off: at the longest tier also
+run `omarchy-lock-screen`) are the settings; the card hands them to
+`pinentry-omarchy` every time it opens.
+
 ## Keys
 
 | Key                      | Action                                                   |
@@ -243,6 +259,9 @@ string, which both the card and the helper read back as the array.
 | `clipTimeSec`    | `60`                         | Seconds until a copied password, username or OTP code is cleared from the clipboard. The value is copied with the password-manager hint, so the clipboard history never records it; should an older `wl-copy` have let it in, it is removed from the history file at the same moment. Also `PASSWORD_STORE_CLIP_TIME` for the terminal actions. |
 | `usernameKeys`   | `login,user,username,email`  | Field names that hold the username, matched case-insensitively.        |
 | `usernameInPath` | `true`                       | Entries are `name/username` (the list shows both, the editor names new entries that way). `false` keeps pass's classic `folder/entry` layout: the row shows the folder under the entry, and the username lives only inside the file. |
+| `unlockAttempts` | `5`                          | Wrong passphrases within ten minutes before a lockout.                 |
+| `unlockLockoutSec` | `30`                       | The first lockout; each further one is four times longer, up to 30 min. |
+| `lockSessionOnLockout` | `false`                | Also lock the session (`omarchy-lock-screen`) at the longest tier.     |
 | `allowTyping`    | `true`                       | Enable `Ctrl+Enter` / `Ctrl+Shift+Enter` (needs `wtype`).               |
 | `notifyOnCopy`   | `true`                       | Notify when something was copied, naming the entry and its username. Failures are always notified.         |
 
