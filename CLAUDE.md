@@ -26,7 +26,9 @@ Omarchy overlay + bar-widget plugin. This checkout *is* the installed plugin
   (`omarchy bar set hegjon.passwordstore vaults '[{"id":"t","name":"T","storeDir":"<dir>"}]' --json`),
   open the overlay, drive it with `wtype "git"` / `wtype -k Down` / `wtype -k F2`,
   screenshot with `grim -o HDMI-A-1` and `magick -crop`. The card is centered;
-  on the 3840×2160 monitor `1400x800+1220+680` frames it. Switch to an empty
+  on the 3840×2160 monitor `1400x800+1220+680` frames it, on rig2's
+  3440×1440 one a seven-row store's card is exactly `428x492+1506+474`
+  (preview.png is that crop, so nothing behind the card is in it). Switch to an empty
   workspace first (`hyprctl dispatch 'hl.dsp.focus({ workspace = "9" })'`) so
   only the wallpaper is behind the card. Restore the settings afterwards.
   `preview.png` is that crop.
