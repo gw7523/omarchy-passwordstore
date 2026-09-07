@@ -294,6 +294,16 @@ check "git: sync-push pushes" '.ok == true' "$out"
   && ok "git: …and the remote has the new entry" || bad "git: …and the remote has the new entry"
 grep -qx "git push --quiet" "$work/pass.calls" && ok "git: the push goes through pass git" || bad "git: the push goes through pass git"
 
+# A seat where git has no identity at all: the first commit must still happen.
+reset
+s3b="$work/store3b"; mkdir -p "$s3b/web"; printf '%s\n' "$ALICE" > "$s3b/.gpg-id"; : > "$s3b/web/site.gpg"
+remote_b="$work/remote-b.git"; git init -q --bare -b main "$remote_b"
+out=$(HOME="$work/nohome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null "$SETUP" sync-setup --store "$s3b" --backend git --git-remote "file://$remote_b")
+check "git: without a git identity sync-setup still makes the first commit and pushes" '.ok == true' "$out"
+[[ $(git -C "$remote_b" ls-tree --name-only -r main 2>/dev/null | grep -c 'web/site.gpg') -eq 1 ]] \
+  && ok "git: …with the entries in it" || bad "git: …with the entries in it"
+[[ -n $(git -C "$s3b" config user.email) ]] && ok "git: …under a local identity" || bad "git: …under a local identity"
+
 s4="$work/store4"
 "$SETUP" init --store "$s4" --gpg-id "$ALICE" >/dev/null
 out=$("$SETUP" sync-setup --store "$s4" --backend git --git-remote "file://$remote")
@@ -379,6 +389,28 @@ check "install: refuses a package name with shell characters" '.error | test("No
 
 "$SETUP" >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "no command exits 2" || bad "no command exits 2"
 "$SETUP" status --bogus >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "an unknown option exits 2" || bad "an unknown option exits 2"
+
+# --- pinentry ---------------------------------------------------------------
+
+export GNUPGHOME="$work/gnupg"; mkdir -p "$GNUPGHOME"
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "$WORK/gpgconf.calls"\n' > "$work/bin/gpgconf"; chmod +x "$work/bin/gpgconf"
+printf 'default-cache-ttl 600\n' > "$GNUPGHOME/gpg-agent.conf"
+out=$("$SETUP" pinentry)
+check "pinentry: reports default when gpg-agent.conf names no program" '.ok == true and .pinentry == "default"' "$out"
+out=$("$SETUP" pinentry --enable)
+check "pinentry --enable: reports omarchy" '.ok == true and .pinentry == "omarchy"' "$out"
+grep -q '^pinentry-program .*/pinentry-omarchy$' "$GNUPGHOME/gpg-agent.conf" && grep -qx 'default-cache-ttl 600' "$GNUPGHOME/gpg-agent.conf" \
+  && ok "pinentry --enable: writes the line and keeps the rest of gpg-agent.conf" \
+  || bad "pinentry --enable: writes the line and keeps the rest of gpg-agent.conf"
+grep -qx -- '--reload gpg-agent' "$work/gpgconf.calls" && ok "pinentry --enable: reloads the agent" || bad "pinentry --enable: reloads the agent"
+[[ $(stat -c %a "$GNUPGHOME/gpg-agent.conf") == 600 ]] && ok "pinentry: the conf stays private (600)" || bad "pinentry: the conf stays private (600)"
+printf 'pinentry-program /usr/bin/pinentry-qt\n' > "$GNUPGHOME/gpg-agent.conf"
+out=$("$SETUP" pinentry)
+check "pinentry: another program reports other" '.pinentry == "other"' "$out"
+out=$("$SETUP" pinentry --disable)
+check "pinentry --disable: back to default" '.pinentry == "default"' "$out"
+grep -q pinentry-program "$GNUPGHOME/gpg-agent.conf" && bad "pinentry --disable: drops the line" || ok "pinentry --disable: drops the line"
+unset GNUPGHOME
 
 echo
 printf '%d passed, %d failed\n' "$passed" "$failed"

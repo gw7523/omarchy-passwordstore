@@ -88,7 +88,7 @@ opens the same wizard later, starting at the list of vaults.
 | **Vaults** | The vaults on record. `Enter` edits one, `A` adds one, `D` makes one active, `X` forgets its record (the directory and its entries are left alone; delete them yourself if you mean it). |
 | **Vault** | A name and a directory. Each vault is its own `PASSWORD_STORE_DIR`; the first defaults to `~/.password-store`, a second to `~/.password-store-shared`. |
 | **Dependencies** | `pass` and `gnupg` are required, `git`, `rclone`, `pass-otp`, `wtype` optional. `Space` selects, `Enter` runs `omarchy pkg add` in a floating terminal. |
-| **GPG keys** | The keys gpg knows about, secret ones first. `Space` selects one or more, `G` generates, `I` imports a **private** key, `U` a **public** key. Import names the type and pre-fills `~/secret.asc`, `~/public.asc`, or a matching file in Downloads/Documents if one is there. |
+| **GPG keys** | The keys gpg knows about, secret ones first. `Space` selects one or more, `G` generates, `I` imports a **private** key, `U` a **public** key. Import names the type and pre-fills `~/secret.asc`, `~/public.asc`, or a matching file in Downloads/Documents if one is there. `P` switches gpg-agent's passphrase prompt to the Omarchy-styled one below. |
 | **Password store** | `pass init <keys…>` in the vault's directory. A directory that already has a `.gpg-id` is kept as it is; re-encrypting it for other keys is a separate, explicit choice. |
 | **Sync** | One of the four backends below, then its first-time wiring. Applying saves the vault and drops you back into the search on it. |
 
@@ -118,7 +118,7 @@ and syncs on its own, usually through git.
 | Backend | First-time setup | Afterwards |
 |---|---|---|
 | **local** | Nothing. The directory is the whole vault. | Nothing leaves the machine. |
-| **git** | `pass git init` if needed, `git remote add origin <url>`, then the first `git push -u origin <branch>` in a terminal (so ssh or a credential helper can ask). An *empty* store pointed at a remote that already has commits fetches that branch instead: that is how a second seat joins a vault. | After `pass edit` / insert / generate: `pass git push`. On open: `pass git pull --rebase` (`gitPullOnOpen`, default on). |
+| **git** | `pass git init` if needed (with a local git identity if the seat has none, so the first commit happens), `git remote add origin <url>`, then the first `git push -u origin <branch>` in a terminal (so ssh or a credential helper can ask). An *empty* store pointed at a remote that already has commits fetches that branch instead: that is how a second seat joins a vault. | After `pass edit` / insert / generate: `pass git push`. On open: `pass git pull --rebase` (`gitPullOnOpen`, default on). |
 | **rclone** | The remote must already exist in `rclone config`; its tokens stay there. An empty store is filled with `rclone copy remote → store`; a store with entries is uploaded only after you confirm. | After a change: `rclone copy` (default) or `rclone sync` (`rcloneMode`; sync deletes on the remote) store → remote, `.git` excluded. On open: `rclone copy` remote → store (`rclonePullOnOpen`, default on). |
 | **custom** | A push command and an optional pull command. | Run with `bash -lc` in the store, `$STORE` set to its directory: push after a change, pull on open. Never put a secret in a command; it sits in `shell.json`. |
 
@@ -128,6 +128,26 @@ Push failures notify and never hold up the change itself. A pull that fails
 Anything the card can do, `passwordstore-setup` does from a terminal too:
 `passwordstore-setup sync-push`, `passwordstore-setup status --vault shared`,
 `passwordstore-setup init --store ~/.password-store-shared --gpg-id A --gpg-id B`.
+
+## The passphrase prompt
+
+gpg-agent asks for a key's passphrase through a *pinentry*; on Omarchy that
+is the GNOME dialog unless told otherwise. `pinentry-omarchy`, shipped here,
+draws the same prompt the way the shell's lock screen and polkit agent do
+(a card with a masked field, the key's name above it, `Alt+R` to show what
+you typed, a second field when gpg wants a new passphrase twice). Switch to
+it from the setup card's GPG page (`P`), or by hand:
+
+```
+# ~/.gnupg/gpg-agent.conf
+pinentry-program /home/you/.config/omarchy/plugins/hegjon.passwordstore/pinentry-omarchy
+```
+
+then `gpgconf --reload gpg-agent`. It speaks the Assuan pinentry protocol on
+stdin/stdout; the passphrase goes from the card to it over a private unix
+socket in `$XDG_RUNTIME_DIR` and on to gpg-agent, never through argv or a
+file. `passwordstore-setup pinentry [--enable|--disable]` reports or changes
+the setting. Needs Quickshell (`qs`), which Omarchy ships.
 
 ## Keys
 
@@ -187,7 +207,9 @@ second line, and everything after the first blank line is notes. A classic
 `web/github.com` with a `login:` inside shows `github.com` as its username
 in the list (the list cannot decrypt), but the editor reads the real one
 and keeps the path unless you change the name or username, which moves the
-entry to `name/username`. A new name never overwrites an existing entry. Lines the
+entry to `name/username`. A new name never overwrites an existing entry. A store laid out the classic
+way throughout is happier with `usernameInPath` off (Settings): rows show
+`folder` under `entry` as before, and nothing is ever read as a username. Lines the
 editor does not know (`url:`, an `otpauth://` line for pass-otp) are kept,
 and the card says so under the notes. `pass edit` in a terminal
 (`Alt+Shift+E`) is there for anything else.
@@ -214,6 +236,7 @@ string, which both the card and the helper read back as the array.
 | `activeVaultId`  | *(empty)*                    | The vault the card searches; the first one when empty. `Tab` changes it. |
 | `clipTimeSec`    | `60`                         | Seconds until a copied password, username or OTP code is cleared from the clipboard. The value is copied with the password-manager hint, so the clipboard history never records it; should an older `wl-copy` have let it in, it is removed from the history file at the same moment. Also `PASSWORD_STORE_CLIP_TIME` for the terminal actions. |
 | `usernameKeys`   | `login,user,username,email`  | Field names that hold the username, matched case-insensitively.        |
+| `usernameInPath` | `true`                       | Entries are `name/username` (the list shows both, the editor names new entries that way). `false` keeps pass's classic `folder/entry` layout: the row shows the folder under the entry, and the username lives only inside the file. |
 | `allowTyping`    | `true`                       | Enable `Ctrl+Enter` / `Ctrl+Shift+Enter` (needs `wtype`).               |
 | `notifyOnCopy`   | `true`                       | Notify when something was copied, naming the entry and its username. Failures are always notified.         |
 
@@ -251,7 +274,7 @@ hand:
   `--sync --vault ID` the changes end with a push.
 - `passwordstore-setup <command> [...]` is the wizard's back end: `status`,
   `gpg-list`, `gpg-generate`, `gpg-inspect`, `gpg-import`, `install`, `init`, `sync-status`,
-  `sync-setup`, `sync-pull`, `sync-push`. JSON on stdout, settings read from
+  `sync-setup`, `sync-pull`, `sync-push`, `pinentry`. JSON on stdout, settings read from
   the vault's record in `shell.json` when not given as options. Anything that
   may ask for a passphrase or a credential runs in a floating terminal that
   the helper waits on; the card only ever sees status.
@@ -263,8 +286,8 @@ store so they are never committed with it.
 ## Development
 
 `test/lint` runs qmllint, `test/test-manifest` checks the manifest,
-`test/test-list`, `test/test-action` and `test/test-setup` exercise the
-scripts against a throwaway store and stand-in `pass`/`gpg`/`rclone`/`wl-copy`/
+`test/test-list`, `test/test-action`, `test/test-setup` and
+`test/test-pinentry` exercise the scripts against a throwaway store and stand-in `pass`/`gpg`/`rclone`/`wl-copy`/
 `wtype` (git is real, against a bare repository in a temp dir), so no gpg key
 is needed. `omarchy plugin validate .` and
 `shellcheck --severity=warning passwordstore-* test/test-*` complete the set.
