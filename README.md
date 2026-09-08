@@ -193,13 +193,16 @@ gpg-agent to another pinentry program stops the counting. `gpg
 --pinentry-mode loopback` never passes through a pinentry either;
 `lockoutNoLoopback` (off) makes gpg-agent refuse it
 (`no-allow-loopback-pinentry`), at the price of any other tool that relies
-on loopback. It slows down guessing at the prompt and in the card; the
+on loopback; switching it either way reloads the agent, which forgets every
+cached passphrase once. It slows down guessing at the prompt and in the card; the
 session lock is the backstop for a seat that is not in its owner's hands.
 
 A `pass` run from a terminal counts too: the prompt takes a session that
-ends on an accepted answer (no error after it, fewer than two errors in the
-session) as a success and resets the count, and a session that reached the
-third try as neither.
+unwrapped an OpenPGP key and ended on an accepted answer (no error after
+it, fewer than two errors in the session) as a success and resets the
+count; a session that reached the third try, a cancelled one, and prompts
+the agent hands back unchecked (a symmetric decrypt, `GET_PASSPHRASE`)
+count as nothing.
 
 ## Sharing an entry
 

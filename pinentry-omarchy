@@ -377,8 +377,13 @@ class Pinentry:
             # the third; a session that ends after an answer with no error
             # following it, and fewer than two errors, therefore ended on an
             # accepted passphrase. That covers `pass` in a terminal, which
-            # never reports through passwordstore-action.
-            if self.answered > 0 and not self.errored_since and self.errors < 2 and not self.setting_new:
+            # never reports through passwordstore-action. Only when the
+            # agent was unwrapping an OpenPGP key (SETKEYINFO n/<keygrip>):
+            # a GET_PASSPHRASE or a symmetric decrypt (u/…, --clear) hands
+            # back whatever was typed without checking it, and must not
+            # count as anything.
+            if (self.answered > 0 and not self.errored_since and self.errors < 2
+                    and not self.setting_new and self.keyinfo.startswith("n/")):
                 record_success()
             self.send("OK closing connection")
             return False
