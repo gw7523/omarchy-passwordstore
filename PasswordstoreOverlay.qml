@@ -358,14 +358,17 @@ Item {
     contentMargin * 2 + setupColumn.implicitHeight
   readonly property int editCardHeight:
     contentMargin * 2 + editColumn.implicitHeight
+  readonly property int shareCardHeight:
+    contentMargin * 2 + shareColumn.implicitHeight
   readonly property int cardHeight: Math.min(
-    mode === "setup" ? setupCardHeight : (mode === "edit" ? editCardHeight : searchCardHeight),
+    mode === "setup" ? setupCardHeight : (mode === "edit" ? editCardHeight : (mode === "share" ? shareCardHeight : searchCardHeight)),
     panel.height - Style.gapsOut * 2)
 
   // --- open / close (the shell's overlay contract) ----------------------
 
   function open(payloadJson) {
     if (root.mode === "edit") root.resetEditor()
+    if (root.mode === "share") root.leaveShare(true)
     root.filterText = ""
     root.selectedIndex = 0
     root.cursorActive = true
@@ -388,11 +391,14 @@ Item {
   function close() {
     root.opened = false
     if (root.mode === "edit") root.resetEditor()
+    // dismiss() reaches here through shell.hide(); a send in flight keeps its file.
+    if (root.mode === "share" && !root.shareSending) root.leaveShare(true)
   }
 
   function dismiss() {
     root.opened = false
     if (root.mode === "edit") root.resetEditor()
+    if (root.mode === "share" && !root.shareSending) root.leaveShare(true)
     if (root.shell && typeof root.shell.hide === "function")
       root.shell.hide((root.manifest && root.manifest.id) || root.pluginId)
   }
@@ -936,6 +942,119 @@ Item {
       if (exitCode !== 0) console.warn("passwordstore: save failed:", String(saveStderr.text || "").replace(/\s+/g, " ").trim() || ("exit " + exitCode))
       else root.refresh()
     }
+  }
+
+  // --- sharing over LocalSend ---------------------------------------------
+
+  // Alt+S: the entry is encrypted for a recipient key, or with a one-time
+  // passphrase the card shows for reading out over another channel, into
+  // a file under the runtime dir; Enter then opens LocalSend's device
+  // picker in a terminal, which removes the file when it closes.
+  property string shareEntry: ""
+  property string shareFile: ""
+  property string sharePassphrase: ""
+  property string shareError: ""
+  property bool shareBusy: false
+  property bool shareSending: false
+  property bool shareReading: false    // decrypting: the panel hides so pinentry can have the keyboard
+  property bool shareAbandoned: false  // left while encrypting: the file is discarded when it appears
+  property string shareBuffer: ""
+
+  function openShare(entry) {
+    if (!entry || shareProcess.running) return
+    mode = "share"
+    shareEntry = String(entry.name)
+    shareFile = ""
+    sharePassphrase = ""
+    shareError = ""
+    shareSending = false
+    recipientField.text = ""
+    Qt.callLater(function() { recipientField.forceActiveFocus() })
+  }
+
+  // Back to the search; a prepared but unsent file is removed, and one
+  // still being made is removed when the helper reports it.
+  function leaveShare(discard) {
+    if (discard && shareFile !== "") Quickshell.execDetached([actionPath, "discard", "", "--file", shareFile])
+    if (discard && shareBusy) shareAbandoned = true
+    shareFile = ""
+    sharePassphrase = ""
+    shareEntry = ""
+    shareError = ""
+    shareBusy = false
+    shareReading = false
+    shareSending = false
+    recipientField.text = ""
+    mode = "search"
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function prepareShare() {
+    if (shareBusy || shareEntry === "") return
+    var to = recipientField.text.replace(/\s+/g, "")
+    if (to !== "" && !/^(0x)?[0-9A-Fa-f]{16,40}$/.test(to)) { shareError = "A fingerprint is 16 to 40 hex digits"; return }
+    shareError = ""
+    shareBusy = true
+    shareReading = true
+    shareAbandoned = false
+    shareBuffer = ""
+    var command = [actionPath, "share", shareEntry, "--quiet"]
+    if (to !== "") command.push("--to", to)
+    if (storeDir !== "") command.push("--store", storeDir)
+    shareProcess.command = command
+    shareProcess.running = true
+  }
+
+  function sendShare() {
+    if (shareFile === "" || actionProcess.running) return
+    // The helper is started before the card goes, and shareSending keeps
+    // close() from discarding the file on the way out.
+    shareSending = true
+    actionProcess.command = [actionPath, "send", "", "--file", shareFile]
+    actionProcess.running = true
+    dismiss()
+    shareFile = ""
+    leaveShare(false)
+  }
+
+  Process {
+    id: shareProcess
+    running: false
+    command: []
+    stdout: SplitParser { splitMarker: ""; onRead: function(data) { root.shareBuffer += data } }
+    stderr: StdioCollector { id: shareStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      var text = root.shareBuffer
+      root.shareBuffer = ""
+      root.shareBusy = false
+      root.shareReading = false
+      var parsed = null
+      try { parsed = JSON.parse(text) } catch (e) { parsed = null }
+      if (root.shareAbandoned || root.mode !== "share") {
+        // Left before the helper finished: the file it made goes.
+        root.shareAbandoned = false
+        if (parsed && parsed.file) Quickshell.execDetached([root.actionPath, "discard", "", "--file", String(parsed.file)])
+        return
+      }
+      if (exitCode !== 0 || !parsed || !parsed.ok) {
+        root.shareError = String(shareStderr.text || "").replace(/\s+/g, " ").trim() || "Could not prepare the entry"
+        return
+      }
+      root.shareFile = String(parsed.file || "")
+      root.sharePassphrase = String(parsed.passphrase || "")
+      // Encrypted for a key: nothing to read out, straight to the picker.
+      if (root.sharePassphrase === "") root.sendShare()
+    }
+  }
+
+  function shareKey(event) {
+    if (event.key === Qt.Key_Escape) { leaveShare(true); return true }
+    if (shareBusy) return false
+    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+      if (shareFile === "") prepareShare(); else sendShare()
+      return true
+    }
+    return false
   }
 
   // Keys the editor answers to after the focused field has had its turn.
@@ -1713,7 +1832,7 @@ Item {
     var hints = ["Enter copy password", "Alt+U username"]
     if (otpAvailable) hints.push("Alt+O OTP")
     if (allowTyping) hints.push("Ctrl+Enter type")
-    hints.push("Alt+E edit", "Alt+N new")
+    hints.push("Alt+E edit", "Alt+N new", "Alt+S share")
     if (vaults.length > 1) hints.push("Tab vault")
     hints.push("F2 setup")
     var line = hints.join("  ·  ")
@@ -1859,12 +1978,12 @@ Item {
     // (gpg --full-generate-key, pkg add, first git/rclone push). Otherwise
     // the fullscreen layer eats keys and clicks meant for that terminal or
     // for whatever app is behind the scrim.
-    visible: root.opened && root.setupBusy === "" && !root.editReading
+    visible: root.opened && root.setupBusy === "" && !root.editReading && !root.shareReading
     anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
     WlrLayershell.namespace: "omarchy-passwordstore"
     WlrLayershell.layer: WlrLayer.Overlay
-    WlrLayershell.keyboardFocus: (root.opened && root.setupBusy === "" && !root.editReading)
+    WlrLayershell.keyboardFocus: (root.opened && root.setupBusy === "" && !root.editReading && !root.shareReading)
       ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
     exclusionMode: ExclusionMode.Ignore
 
@@ -1895,6 +2014,7 @@ Item {
       Keys.onPressed: function(event) {
         if (root.mode === "setup") { if (root.setupKey(event)) event.accepted = true }
         else if (root.mode === "edit") { if (root.editKey(event)) event.accepted = true }
+        else if (root.mode === "share") { if (root.shareKey(event)) event.accepted = true }
       }
 
       // Type-to-filter, as the menu does: there is no text field to focus,
@@ -1953,6 +2073,8 @@ Item {
             root.activateSelected("copy-otp"); event.accepted = true
           } else if (alt && event.key === Qt.Key_E) {
             root.activateSelected(shift ? "edit-terminal" : "edit"); event.accepted = true
+          } else if (alt && event.key === Qt.Key_S) {
+            root.openShare(root.selectedEntry); event.accepted = true
           } else if (alt && event.key === Qt.Key_N) {
             root.insertNew("insert"); event.accepted = true
           } else if (alt && event.key === Qt.Key_G) {
@@ -2479,6 +2601,114 @@ Item {
                 opacity: root.editCanSave ? 1 : 0.5
                 onClicked: root.saveEntry()
               }
+            }
+          }
+        }
+      }
+
+      // ----------------------------------------------------------- share
+
+      Column {
+        id: shareColumn
+        anchors.fill: parent
+        anchors.topMargin: card.contentTopInset
+        anchors.rightMargin: card.contentRightInset
+        anchors.bottomMargin: card.contentBottomInset
+        anchors.leftMargin: card.contentLeftInset
+        spacing: Style.space(8)
+        visible: root.mode === "share"
+
+        Item {
+          width: parent.width
+          height: root.headerHeight
+          Text {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Share  ·  " + root.shareEntry
+            textFormat: Text.PlainText
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.heading
+            elide: Text.ElideLeft
+          }
+        }
+
+        SetupText {
+          visible: root.sharePassphrase === ""
+          text: "The entry is encrypted before it leaves this machine, and LocalSend carries the encrypted file. Give the recipient's GPG key fingerprint (not a name or e-mail, which could match someone else's key) to encrypt for them, or leave it empty for a one-time passphrase you read out to them over another channel."
+          opacity: 0.7
+        }
+        EditLabel { visible: root.sharePassphrase === ""; text: "Recipient's key (optional)" }
+        CardField {
+          id: recipientField
+          visible: root.sharePassphrase === ""
+          placeholderText: "the recipient's key fingerprint, e.g. 9271 4414 6315 8686 7128 …"
+          enabled: !root.shareBusy
+          Keys.onPressed: function(event) { if (root.shareKey(event)) event.accepted = true }
+        }
+
+        SetupText {
+          visible: root.sharePassphrase !== ""
+          text: "Read this passphrase to the recipient over another channel (a call, in person). They decrypt the file with any gpg: gpg --decrypt. It is not kept anywhere."
+          opacity: 0.7
+        }
+        BorderSurface {
+          width: parent.width
+          height: passphraseText.implicitHeight + Style.space(20)
+          radius: Style.cornerRadius
+          visible: root.sharePassphrase !== ""
+          color: Style.controlFill(false, false, root.foreground, root.selectedBackground)
+          borderSpec: Border.controlSpec("normal", root.foreground, root.selectedBackground)
+          Text {
+            id: passphraseText
+            anchors.centerIn: parent
+            width: parent.width - Style.space(24)
+            text: root.colorize(root.sharePassphrase)
+            textFormat: Text.RichText
+            wrapMode: Text.Wrap
+            horizontalAlignment: Text.AlignHCenter
+            font.family: Style.font.family
+            font.pixelSize: Style.font.display
+          }
+        }
+
+        Text {
+          width: parent.width
+          visible: root.shareError !== ""
+          text: root.shareError
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          color: Color.urgent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+        }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(8)
+          topPadding: Style.space(4)
+          Text {
+            width: parent.width
+            text: root.shareBusy ? "Encrypting…"
+              : (root.sharePassphrase !== "" ? "Enter opens LocalSend's device picker in a terminal; the file is removed when it closes  ·  Esc discard"
+                 : "Enter encrypt  ·  Esc back")
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: root.foreground
+            opacity: 0.45
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+          Row {
+            anchors.right: parent.right
+            spacing: Style.spacing.controlGap
+            CardButton { text: root.sharePassphrase !== "" ? "Discard" : "Cancel"; onClicked: root.leaveShare(true) }
+            CardButton {
+              text: root.sharePassphrase !== "" ? "Send" : "Encrypt"
+              selected: !root.shareBusy
+              opacity: root.shareBusy ? 0.5 : 1
+              onClicked: root.shareFile === "" ? root.prepareShare() : root.sendShare()
             }
           }
         }

@@ -173,6 +173,20 @@ gpg-agent to another pinentry program stops the counting. It slows down
 guessing at the prompt and in the card; the session lock is the backstop
 for a seat that is not in its owner's hands.
 
+## Sharing an entry
+
+`Alt+S` hands one entry to someone nearby over [LocalSend](https://localsend.org/),
+which Omarchy ships. It never leaves the machine in the clear: the entry
+(as the editor writes it) is encrypted with gpg into a file under
+`$XDG_RUNTIME_DIR`, either **for the recipient's key** (their fingerprint; they
+need to have given you their public key, and a name or e-mail is not
+accepted because it could match someone else's key) or, with the key
+field left empty, with a **one-time passphrase** the card shows for you to
+read out over another channel. `Enter` then opens LocalSend's device
+picker in a terminal; pick the device, and the file is removed when the
+picker closes, sent or not. The recipient runs `gpg --decrypt` on what
+they received.
+
 ## Keys
 
 | Key                      | Action                                                   |
@@ -186,6 +200,7 @@ for a seat that is not in its owner's hands.
 | `Ctrl+Shift+Enter`       | Type the username                                        |
 | `Alt+E`                  | Edit the entry on the card; `Alt+Shift+E` opens it in a terminal with `pass edit` instead |
 | `Alt+N` / `Alt+G`        | Add an entry on the card (`Alt+G`: with a password already generated); the search text, if any, is the new entry's name |
+| `Alt+S`                  | Share the entry over LocalSend, encrypted (below)        |
 | `Tab` / `Shift+Tab`      | Next / previous vault                                    |
 | `F2` / `Ctrl+,`          | Setup: vaults, keys, sync                                |
 | `F5`                     | Re-read the store (it is also re-read every time it opens) |
