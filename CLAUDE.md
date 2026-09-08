@@ -61,6 +61,14 @@ Omarchy overlay + bar-widget plugin. This checkout *is* the installed plugin
   (`omarchy-plugin-validate` refuses them) and `qs.*` imports resolve from
   the config root.
 
+- The lockout is three pieces: `pinentry-omarchy` keeps the count and the
+  policy under `$XDG_RUNTIME_DIR/pinentry-omarchy/` (`--lockout-status`,
+  `--unlock-failed`, `--unlock-ok`, `--set-policy`), `passwordstore-action`
+  reports every decrypt's outcome and refuses while locked,
+  `passwordstore-setup lockout-policy` copies the settings over and `status`
+  carries `lockout`. The card ticks the remaining time itself and re-asks
+  status when it reaches zero.
+
 ## Things that bit before
 
 - `escape` is a reserved word in QML; a `function escape()` in a component
