@@ -58,7 +58,9 @@
       "lockoutNoLoopback": false,
       "writeCardGeometry": false,
       "autofillSubmit": false,
-      "healthHibp": false
+      "healthHibp": false,
+      "idleLockMin": 0,
+      "clearOnLock": true
     },
     "schema": [
       {
@@ -227,6 +229,23 @@
         "label": "Health check asks Have I Been Pwned",
         "description": "Off by default. On, the vault health check sends the first five characters of each password's SHA-1 to api.pwnedpasswords.com (k-anonymity) and compares the answer here.",
         "defaultValue": false
+      },
+      {
+        "key": "idleLockMin",
+        "type": "integer",
+        "label": "Forget the passphrase after idle minutes",
+        "description": "0 is off. After this many minutes without using the card, the vault key's cached passphrase is cleared from gpg-agent (by keygrip; other keys stay), the clipboard is cleared, and files left by share are removed; the next use asks again.",
+        "min": 0,
+        "max": 1440,
+        "step": 5,
+        "defaultValue": 0
+      },
+      {
+        "key": "clearOnLock",
+        "type": "boolean",
+        "label": "Forget on screen lock and before sleep",
+        "description": "The same clearing when the session locks (hyprctl locked, polled every 5 s) and when logind announces sleep.",
+        "defaultValue": true
       }
     ]
   },
