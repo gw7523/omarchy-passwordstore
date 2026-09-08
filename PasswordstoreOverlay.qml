@@ -1185,11 +1185,13 @@ Item {
       case "gpg-list":
       case "gpg-generate":
       case "gpg-import":
+      case "gpg-export":
         gpgKeys = Array.isArray(parsed.keys) ? parsed.keys : []
         if (op === "gpg-import") {
           var kind = String(parsed.kind || (parsed.importedSecret ? "secret" : "public"))
           if (kind === "secret")
             setupNote = "Imported a private (secret) key. This seat can decrypt entries encrypted for it."
+              + (parsed.deleted ? " The file was shredded." : (importDeleteFile ? " The file could not be deleted; remove it yourself." : ""))
           else
             setupNote = "Imported a public key (recipient). It cannot decrypt here; select it with your private key for a shared vault."
           gpgImporting = false
@@ -1198,6 +1200,13 @@ Item {
           importPathField.text = ""
         }
         if (op === "gpg-generate" && parsed.status === 124) setupNote = "Still waiting for gpg? Press F5 to rescan"
+        if (op === "gpg-export") {
+          gpgExporting = false
+          gpgExportKind = ""
+          setupNote = (parsed.kind === "secret"
+            ? "Wrote the private key to " + parsed.file + " (" + parsed.bytes + " bytes). Move it where it is going, import it there, then delete it here: shred -u " + parsed.file
+            : "Wrote the public key to " + parsed.file + " (" + parsed.bytes + " bytes). Safe to send to anyone who should encrypt for you.")
+        }
         preselectStoreKeys()
         break
       case "gpg-inspect":
@@ -1316,6 +1325,10 @@ Item {
   property int gpgIndex: 0
   property var selectedGpg: []         // fingerprints
   property bool gpgImporting: false
+  property bool gpgExporting: false
+  property string gpgExportKind: ""    // "secret" | "public"
+  property bool exportAcknowledged: false
+  property bool importDeleteFile: true
   property string gpgImportKind: ""    // "secret" (private) | "public"
   property var importInspect: ({})
   property var importDefaults: ({})
@@ -1400,6 +1413,9 @@ Item {
     gpgImporting = false
     gpgImportKind = ""
     importInspect = {}
+    gpgExporting = false
+    gpgExportKind = ""
+    exportAcknowledged = false
     if (step < 0) {
       if (!storeUsable && !vaultsOnRecord) { beginDraft(activeVault, false); step = requiredDepsMissing ? 2 : 1 }
       else step = 0
@@ -1496,6 +1512,7 @@ Item {
     Qt.callLater(function() {
       if (root.setupStep === 1) vaultNameField.forceActiveFocus()
       else if (root.setupStep === 3 && root.gpgImporting) importPathField.forceActiveFocus()
+      else if (root.setupStep === 3 && root.gpgExporting) exportPathField.forceActiveFocus()
       else if (root.setupStep === 5 && root.setupBackend === "git") gitRemoteField.forceActiveFocus()
       else if (root.setupStep === 5 && root.setupBackend === "rclone") rcloneRemoteField.forceActiveFocus()
       else if (root.setupStep === 5 && root.setupBackend === "custom") pushCmdField.forceActiveFocus()
@@ -1506,6 +1523,7 @@ Item {
   function setupBack() {
     if (setupBusy !== "") return
     if (setupStep === 3 && gpgImporting) { gpgImporting = false; gpgImportKind = ""; importInspect = {}; focusSetupPage(); return }
+    if (setupStep === 3 && gpgExporting) { gpgExporting = false; gpgExportKind = ""; focusSetupPage(); return }
     if (setupStep === 1) { if (vaultsOnRecord || storeUsable) goToStep(0); return }
     if (setupStep === 3 && !requiredDepsMissing) { goToStep(1); return }
     if (setupStep > 0) goToStep(setupStep - 1)
@@ -1514,6 +1532,7 @@ Item {
   function setupCancel() {
     if (setupBusy !== "") return
     if (setupStep === 3 && gpgImporting) { gpgImporting = false; gpgImportKind = ""; importInspect = {}; focusSetupPage(); return }
+    if (setupStep === 3 && gpgExporting) { gpgExporting = false; gpgExportKind = ""; focusSetupPage(); return }
     if (syncConfirm !== "") { syncConfirm = ""; return }
     if (removeConfirm !== "") { removeConfirm = ""; return }
     if (setupStep > 0 && (vaultsOnRecord || storeUsable)) { goToStep(0); return }
@@ -1543,6 +1562,7 @@ Item {
         break
       case 3:
         if (gpgImporting) { importKey(); break }
+        if (gpgExporting) { exportKey(); break }
         if (selectedGpg.length === 0 && gpgIndex >= 0 && gpgIndex < gpgKeys.length) toggleGpg(gpgIndex)
         if (selectedGpg.length === 0) { setupError = "Pick at least one key (Space)"; break }
         if (!selectedGpgHasSecret) { setupError = "One of the keys must have its secret part here, or nothing could be decrypted"; break }
@@ -1597,7 +1617,7 @@ Item {
     var busy = gpgImportKind === "public"
       ? "Importing a public key…"
       : "Importing a private key… (pinentry may ask for its passphrase)"
-    runSetup("gpg-import", ["--file", path], busy, draft)
+    runSetup("gpg-import", ["--file", path].concat(gpgImportKind === "secret" && importDeleteFile ? ["--delete"] : []), busy, draft)
   }
 
   function beginImport(kind) {
@@ -1613,6 +1633,34 @@ Item {
     importPathField.text = ""
     runSetup("gpg-inspect", [], "", draft)
     focusSetupPage()
+  }
+
+  // Export: the warning page first (the secret one has to be acknowledged),
+  // then gpg --export into the path given, through passwordstore-setup.
+  readonly property var cursorKey: gpgKeys.length > 0 && gpgIndex >= 0 && gpgIndex < gpgKeys.length ? gpgKeys[gpgIndex] : null
+  function beginExport(kind) {
+    if (!cursorKey) { setupError = "Pick a key first"; return }
+    if (kind === "secret" && !cursorKey.secret) { setupError = "That key has no secret part here"; return }
+    gpgExporting = true
+    gpgExportKind = kind
+    exportAcknowledged = false
+    setupError = ""
+    setupNote = ""
+    var short = String(cursorKey.fpr || "").slice(-16)
+    exportPathField.text = kind === "secret" ? "~/" + short + ".secret.asc" : "~/Documents/" + short + ".public.asc"
+    focusSetupPage()
+  }
+
+  function exportKey() {
+    if (!gpgExporting || !cursorKey) return
+    var path = String(exportPathField.text).trim()
+    if (path === "") { setupError = "Where should the file go?"; return }
+    if (gpgExportKind === "secret" && !exportAcknowledged) { setupError = "Acknowledge the warning first (Space)"; return }
+    setupError = ""
+    // Busy: the card hides and drops its grab, so pinentry can ask for the
+    // secret key's passphrase, and Esc cannot half-abandon the write.
+    runSetup("gpg-export", ["--kind", gpgExportKind, "--gpg-id", String(cursorKey.fpr), "--file", path],
+             gpgExportKind === "secret" ? "Writing the private key (pinentry may ask)…" : "Writing the public key…", draft)
   }
 
   function inspectImportPath() {
@@ -1738,7 +1786,10 @@ Item {
   function setupKey(event) {
     var alt = event.modifiers & Qt.AltModifier
     var ctrl = event.modifiers & Qt.ControlModifier
-    var inField = panel.activeFocusItem !== null && panel.activeFocusItem !== keyCatcher
+    // Only a text input counts as "in a field": a Toggle or a button that
+    // happens to hold focus must not swallow the page's letter keys.
+    var focusItem = panel.activeFocusItem
+    var inField = focusItem !== null && focusItem !== keyCatcher && focusItem.cursorPosition !== undefined
     if (event.key === Qt.Key_Escape) { setupCancel(); return true }
     if (event.key === Qt.Key_Left && alt) { setupBack(); return true }
     if (event.key === Qt.Key_Right && alt) { setupPrimary(); return true }
@@ -1762,11 +1813,16 @@ Item {
     }
     if (setupStep === 2 && event.key === Qt.Key_Space) { toggleDep(depIndex); return true }
     if (setupStep === 2 && letter === "s" && !requiredDepsMissing) { goToStep(3); return true }
-    if (setupStep === 3 && event.key === Qt.Key_Space) { toggleGpg(gpgIndex); return true }
-    if (setupStep === 3 && letter === "g") { generateKey(); return true }
-    if (setupStep === 3 && letter === "i") { beginImport("secret"); return true }
-    if (setupStep === 3 && letter === "u") { beginImport("public"); return true }
-    if (setupStep === 3 && letter === "p" && !gpgImporting) { togglePinentry(); return true }
+    if (setupStep === 3 && event.key === Qt.Key_Space && !gpgImporting && !gpgExporting) { toggleGpg(gpgIndex); return true }
+    if (setupStep === 3 && letter === "g" && !gpgImporting && !gpgExporting) { generateKey(); return true }
+    if (setupStep === 3 && letter === "i" && !gpgImporting && !gpgExporting) { beginImport("secret"); return true }
+    if (setupStep === 3 && letter === "u" && !gpgImporting && !gpgExporting) { beginImport("public"); return true }
+    if (setupStep === 3 && letter === "p" && !gpgImporting && !gpgExporting) { togglePinentry(); return true }
+    if (setupStep === 3 && letter === "e" && !gpgImporting && !gpgExporting) { beginExport("public"); return true }
+    if (setupStep === 3 && letter === "x" && !gpgImporting && !gpgExporting) { beginExport("secret"); return true }
+    // Space toggles the acknowledge / delete switch unless a field has it.
+    if (setupStep === 3 && gpgExporting && event.key === Qt.Key_Space && !inField) { exportAcknowledged = !exportAcknowledged; return true }
+    if (setupStep === 3 && gpgImporting && event.key === Qt.Key_Space && !inField) { importDeleteFile = !importDeleteFile; return true }
     if (setupStep === 4 && letter === "r") { reencrypt(); return true }
     if (setupStep === 5 && letter === "p") { togglePull(); return true }
     if (setupStep === 5 && letter === "m" && setupBackend === "rclone") {
@@ -1779,7 +1835,7 @@ Item {
   function moveCursor(delta) {
     if (setupStep === 0) { vaultIndex = Math.max(0, Math.min(vaultRows.length - 1, vaultIndex + delta)); removeConfirm = "" }
     else if (setupStep === 2) depIndex = Math.max(0, Math.min(depRows.length - 1, depIndex + delta))
-    else if (setupStep === 3 && !gpgImporting) gpgIndex = Math.max(0, Math.min(gpgKeys.length - 1, gpgIndex + delta))
+    else if (setupStep === 3 && !gpgImporting && !gpgExporting) gpgIndex = Math.max(0, Math.min(gpgKeys.length - 1, gpgIndex + delta))
     else if (setupStep === 5) chooseBackend(syncIndex + delta)
   }
 
@@ -1797,14 +1853,14 @@ Item {
       case 2: return depSelected.length > 0 ? "Install selected" : "Next"
       case 3: return gpgImporting
         ? (gpgImportKind === "public" ? "Import public key" : "Import private key")
-        : "Use selected"
+        : (gpgExporting ? (gpgExportKind === "public" ? "Export public key" : "Export private key") : "Use selected")
       case 4: return storeExists ? "Next" : "Create store"
       default: return syncConfirm !== "" ? "Yes, upload" : "Apply"
     }
   }
   readonly property bool setupPrimaryEnabled: setupBusy === "" && (
     setupStep === 2 ? (depSelected.length > 0 || !requiredDepsMissing)
-    : setupStep === 3 ? (gpgImporting || gpgKeys.length > 0)
+    : setupStep === 3 ? (gpgImporting || (gpgExporting ? (gpgExportKind !== "secret" || exportAcknowledged) : gpgKeys.length > 0))
     : setupStep === 4 ? (storeExists || selectedGpg.length > 0)
     : true)
 
@@ -1814,8 +1870,9 @@ Item {
       case 1: return "Tab between fields  ·  Enter next"
       case 2: return "Space select  ·  Enter install  ·  S skip"
       case 3: return gpgImporting
-        ? "Enter import  ·  Esc back to the list"
-        : "↑↓ move  ·  Space select  ·  Enter continue  ·  G generate  ·  I private key  ·  U public key  ·  P prompt  ·  F5 rescan"
+        ? "Enter import  ·  Space delete the file afterwards  ·  Esc back to the list"
+        : gpgExporting ? (gpgExportKind === "secret" ? "Space acknowledge  ·  Enter export  ·  Esc back" : "Enter export  ·  Esc back")
+        : "↑↓ move  ·  Space select  ·  Enter continue  ·  G generate  ·  I/U import private/public  ·  X/E export private/public  ·  P prompt  ·  F5 rescan"
       case 4: return reencryptOffered ? "Enter keep the store's keys  ·  R re-encrypt" : "Enter continue"
       default: return "1–4 or ↑↓ backend  ·  Tab fields  ·  P pull on open" + (setupBackend === "rclone" ? "  ·  M copy/sync" : "") + "  ·  Enter apply"
     }
@@ -2852,7 +2909,7 @@ Item {
           visible: root.setupStep === 3
 
           SetupText {
-            visible: !root.gpgImporting
+            visible: !root.gpgImporting && !root.gpgExporting
             text: root.gpgKeys.length > 0
               ? "The store is encrypted for every key you select. One must be yours (secret part here); a shared vault adds teammates' public keys, imported first."
               : "gpg has no key yet. Generate one (gpg asks for a name, an e-mail and a passphrase in a terminal) or import a backup."
@@ -2861,7 +2918,7 @@ Item {
           }
 
           Repeater {
-            model: root.gpgImporting ? [] : root.gpgKeys
+            model: root.gpgImporting || root.gpgExporting ? [] : root.gpgKeys
             delegate: ChoiceRow {
               required property var modelData
               required property int index
@@ -2886,7 +2943,7 @@ Item {
             SetupText {
               text: root.gpgImportKind === "public"
                 ? "Public key (recipient). Teammates keep their secret keys; you only import what gpg --export --armor wrote. This seat cannot decrypt with it."
-                : "Private (secret) key. This seat will be able to decrypt. Export with gpg --export-secret-keys --armor. pinentry asks for the passphrase if the file has one."
+                : "Private (secret) key. This seat will be able to decrypt every entry encrypted for it. Only import a file that came over a channel you trust (LocalSend or scp from your own seat, a USB stick), compare the fingerprint on both ends, and do not leave the file lying around: it is deleted after the import unless you say otherwise. pinentry asks for the passphrase if the file has one."
               opacity: 0.7
             }
             CardField {
@@ -2894,6 +2951,17 @@ Item {
               placeholderText: root.gpgImportKind === "public" ? "~/public.asc" : "~/secret.asc"
               onAccepted: root.setupPrimary()
               onTextChanged: importInspectTimer.restart()
+            }
+            Toggle {
+              width: parent.width
+              visible: root.gpgImportKind === "secret"
+              label: "Delete the file after importing"
+              description: "shred -u, so the private key does not linger on disk (Space)"
+              checked: root.importDeleteFile
+              foreground: root.foreground
+              accent: root.selectedBackground
+              fontFamily: root.fontFamily
+              onClicked: root.importDeleteFile = !root.importDeleteFile
             }
             SetupText {
               visible: root.importKindLabel !== ""
@@ -2907,13 +2975,50 @@ Item {
             }
           }
 
+          // Export: what the file means comes first; a private key has to
+          // be acknowledged before the button does anything.
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+            visible: root.gpgExporting
+
+            SetupText {
+              text: root.gpgExportKind === "public"
+                ? "Public key of " + (root.cursorKey ? (root.cursorKey.uid || root.cursorKey.fpr) : "") + ". Safe to share: it lets others encrypt entries for you (a shared vault) and verify your signatures. It does not let anyone read your vault."
+                : "Private (secret) key of " + (root.cursorKey ? (root.cursorKey.uid || root.cursorKey.fpr) : "") + ". Whoever holds this file and its passphrase can read every entry in every vault encrypted for it, forever."
+              opacity: 0.8
+            }
+            SetupText {
+              visible: root.gpgExportKind === "secret"
+              text: "Copy it only to media you control: a USB stick you keep offline, or straight to your other seat over LocalSend or scp. Never into a git repository, a cloud folder or a chat. Import it on the other seat, then delete the file on both (shred -u). Keep one copy offline as the backup. A path inside a git checkout or a synced folder is refused."
+              color: Color.urgent
+              opacity: 1
+            }
+            CardField {
+              id: exportPathField
+              placeholderText: root.gpgExportKind === "public" ? "~/Documents/key.public.asc" : "~/key.secret.asc"
+              onAccepted: root.setupPrimary()
+            }
+            Toggle {
+              width: parent.width
+              visible: root.gpgExportKind === "secret"
+              label: "I understand what this file can do"
+              description: "Required before a private key is written (Space)"
+              checked: root.exportAcknowledged
+              foreground: root.foreground
+              accent: root.selectedBackground
+              fontFamily: root.fontFamily
+              onClicked: root.exportAcknowledged = !root.exportAcknowledged
+            }
+          }
+
           Grid {
             width: parent.width
             columns: 2
             columnSpacing: Style.spacing.controlGap
             rowSpacing: Style.spacing.controlGap
             topPadding: Style.space(8)
-            visible: !root.gpgImporting
+            visible: !root.gpgImporting && !root.gpgExporting
             CardButton {
               text: "Generate a key"
               width: (parent.width - parent.columnSpacing) / 2
@@ -2934,13 +3039,23 @@ Item {
               width: (parent.width - parent.columnSpacing) / 2
               onClicked: root.beginImport("public")
             }
+            CardButton {
+              text: "Export private key"
+              width: (parent.width - parent.columnSpacing) / 2
+              onClicked: root.beginExport("secret")
+            }
+            CardButton {
+              text: "Export public key"
+              width: (parent.width - parent.columnSpacing) / 2
+              onClicked: root.beginExport("public")
+            }
           }
 
           // The passphrase prompt: gpg-agent's default is the GNOME one;
           // pinentry-omarchy asks the way the lock screen does.
           Toggle {
             width: parent.width
-            visible: !root.gpgImporting && root.pinentryState !== ""
+            visible: !root.gpgImporting && !root.gpgExporting && root.pinentryState !== ""
             label: "Ask for passphrases with Omarchy's prompt"
             description: root.pinentryState === "omarchy" ? "gpg-agent uses pinentry-omarchy (P toggles)"
               : (root.pinentryState === "other" ? "gpg-agent.conf names another pinentry (P switches)" : "gpg-agent's default prompt (P switches)")
