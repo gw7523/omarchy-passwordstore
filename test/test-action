@@ -257,6 +257,52 @@ reset
 "$ACTION" open-url urls/js --quiet >/dev/null 2>&1
 [[ $? -eq 1 && ! -e $work/xdg-open.calls ]] && ok "open-url refuses a javascript: url" || bad "open-url refuses a javascript: url"
 
+# --- one-time codes ------------------------------------------------------------
+
+reset
+out=$("$ACTION" otp-code site/bob 2>/dev/null)
+[[ $(jq -r .code <<<"$out") == 123456 && $(jq -r .period <<<"$out") == 30 && $(jq -r .remaining <<<"$out") -ge 1 && $(jq -r .remaining <<<"$out") -le 30 ]] \
+  && ok "otp-code: pass otp's code with the period and the seconds left" || bad "otp-code: pass otp's code with the period and the seconds left"
+out=$("$ACTION" read site/bob 2>/dev/null)
+[[ $(jq -r .otp <<<"$out") == true && $(jq -r .otpPeriod <<<"$out") == 30 ]] && ok "read reports an OTP with its period" || bad "read reports an OTP with its period"
+out=$("$ACTION" read web/site 2>/dev/null)
+[[ $(jq -r .otp <<<"$out") == false ]] && ok "read reports no OTP when there is none" || bad "read reports no OTP when there is none"
+reset
+printf '{"secret":"jbsw y3dp ehpk 3pxp","issuer":"Example","digits":6,"period":30}' | "$ACTION" otp-set site/bob --quiet >/dev/null 2>&1
+grep -q '^otpauth://totp/site%2Fbob?secret=JBSWY3DPEHPK3PXP&issuer=Example$' "$work/inserted" && ok "otp-set: builds the URI from a spaced lower-case secret" \
+  || bad "otp-set: builds the URI from a spaced lower-case secret ($(grep otpauth "$work/inserted"))"
+[[ $(grep -c '^otpauth://' "$work/inserted") -eq 1 && $(sed -n 1p "$work/inserted") == 'p4ss w0rd!' && $(tail -n1 "$work/inserted") == second ]] \
+  && ok "otp-set: replaces the old otpauth line, keeps password and notes" || bad "otp-set: replaces the old otpauth line, keeps password and notes"
+grep -q 'JBSWY3DPEHPK3PXP' "$work/pass.calls" && bad "otp-set: the secret is not on pass's argv" || ok "otp-set: the secret is not on pass's argv"
+reset
+printf '{"secret":"not base32!"}' | "$ACTION" otp-set site/bob --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/inserted ]] && ok "otp-set refuses a secret that is not base32" || bad "otp-set refuses a secret that is not base32"
+reset
+"$ACTION" otp-remove site/bob --quiet >/dev/null 2>&1
+grep -q otpauth "$work/inserted" && bad "otp-remove drops the otpauth line" || ok "otp-remove drops the otpauth line"
+cat > "$work/bin/slurp" <<'SHIM'
+#!/bin/bash
+echo "10,10 100x100"
+SHIM
+cat > "$work/bin/grim" <<'SHIM'
+#!/bin/bash
+printf 'png'
+SHIM
+cat > "$work/bin/zbarimg" <<'SHIM'
+#!/bin/bash
+cat >/dev/null; echo "otpauth://totp/Example:bob?secret=JBSWY3DPEHPK3PXP&issuer=Example"
+SHIM
+chmod +x "$work/bin/slurp" "$work/bin/grim" "$work/bin/zbarimg"
+reset
+"$ACTION" otp-scan site/bob --quiet >/dev/null 2>&1
+grep -q '^otpauth://totp/Example:bob?secret=JBSWY3DPEHPK3PXP&issuer=Example$' "$work/inserted" && ok "otp-scan stores the URI zbarimg read from the region" \
+  || bad "otp-scan stores the URI zbarimg read from the region"
+printf '#!/bin/bash\ncat >/dev/null; echo "https://not-an-otp.example"\n' > "$work/bin/zbarimg"
+reset
+"$ACTION" otp-scan site/bob --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/inserted ]] && ok "otp-scan refuses a QR that is not otpauth://" || bad "otp-scan refuses a QR that is not otpauth://"
+rm -f "$work/bin/slurp" "$work/bin/grim" "$work/bin/zbarimg"
+
 reset
 "$ACTION" copy-password missing --quiet >/dev/null 2>&1
 [[ $? -eq 1 ]] && ok "a pass failure exits 1" || bad "a pass failure exits 1"
