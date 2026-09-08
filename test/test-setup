@@ -376,6 +376,7 @@ out=$("$SETUP" gpg-import --file "$work/secret.asc")
 check "gpg-import: a secret key file is imported" '.importedSecret == true and .kind == "secret"' "$out"
 out=$("$SETUP" gpg-import --file "$work/public.asc")
 check "gpg-import: a public-only file says so" '.importedSecret == false and .kind == "public"' "$out"
+check "gpg-import: reports the file's fingerprints for the other seat to compare" '.fingerprints | index("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") != null' "$out"
 
 out=$("$SETUP" gpg-inspect --file "$work/secret.asc")
 check "gpg-inspect: private armor is secret" '.kind == "secret" and .exists == true' "$out"
@@ -394,6 +395,23 @@ out=$("$SETUP" gpg-import --file "$work/missing.asc")
 check "gpg-import: a missing file is an error" '.error | test("Cannot read")' "$out"
 grep -q -- "--import -- $work/secret.asc" "$work/gpg.calls" && ok "gpg-import: the path is handed to gpg after --" \
   || bad "gpg-import: the path is handed to gpg after --"
+
+# --- gpg-send --------------------------------------------------------------
+export XDG_RUNTIME_DIR="$work/run-send"; mkdir -p "$XDG_RUNTIME_DIR"
+cat > "$work/bin/localsend-cli" <<'SHIM'
+#!/bin/bash
+printf '%s\n' "$*" >> "$WORK/localsend.calls"; [[ $1 == --file && -s $2 ]] && cp "$2" "$WORK/sent.asc"
+SHIM
+chmod +x "$work/bin/localsend-cli"
+out=$("$SETUP" gpg-send --gpg-id ABCDEF0123456789ABCDEF0123456789ABCDEF01)
+check "gpg-send: hands the public key to LocalSend's picker" '.ok == true and .fingerprint == "ABCDEF0123456789ABCDEF0123456789ABCDEF01"' "$out"
+grep -q 'PUBLIC KEY BLOCK' "$work/sent.asc" 2>/dev/null && ok "gpg-send: the picker got the public key" || bad "gpg-send: the picker got the public key"
+[[ -z $(ls "$XDG_RUNTIME_DIR/omarchy-passwordstore/share" 2>/dev/null) ]] && ok "gpg-send: the file is gone once the picker closes" || bad "gpg-send: the file is gone once the picker closes"
+grep -q -- '--export-secret' "$work/gpg.calls" && bad "gpg-send: never the secret key" || ok "gpg-send: never the secret key"
+out=$("$SETUP" gpg-send --gpg-id alice@example.com)
+check "gpg-send: needs a full fingerprint" '.error | test("fingerprint")' "$out"
+rm -f "$work/bin/localsend-cli"
+unset XDG_RUNTIME_DIR
 
 # --- gpg-export ----------------------------------------------------------
 

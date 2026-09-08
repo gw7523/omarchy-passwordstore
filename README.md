@@ -119,6 +119,18 @@ prefer:
 Either way the shared store is its own directory (`~/.password-store-shared`)
 and syncs on its own, usually through git.
 
+**Adding a seat** (a second machine of yours, or a teammate's) without a
+file ever leaving the room: on the new seat, Keys page, highlight its key
+and press `S` (`Send key to a seat`); the public key goes to LocalSend's
+device picker. On the seat that holds the vault, `A` (`Add a seat's key`)
+imports the received file (LocalSend saves to `~/Downloads`; the import
+page finds it), shows its fingerprint, and selects it next to the store's
+keys; read the two fingerprints against each other, group by group, one
+screen to the other, then `Next` and `R` re-encrypts every entry for
+both. A git vault pushes right away; the new seat clones or pulls it and
+its key reads everything. Only public keys travel; a private key is never
+sent this way.
+
 ### Sync backends
 
 | Backend | First-time setup | Afterwards |
@@ -347,7 +359,7 @@ hand:
   `~/.local/state/omarchy/clipboard-history.json` as a fallback. With
   `--sync --vault ID` the changes end with a push.
 - `passwordstore-setup <command> [...]` is the wizard's back end: `status`,
-  `gpg-list`, `gpg-generate`, `gpg-inspect`, `gpg-import` (`--delete` shreds the file afterwards), `gpg-export` (`--kind public|secret`, `--force`), `install`, `init`, `sync-status`,
+  `gpg-list`, `gpg-generate`, `gpg-inspect`, `gpg-import` (`--delete` shreds the file afterwards), `gpg-export` (`--kind public|secret`, `--force`), `gpg-send` (the public key to LocalSend's picker), `install`, `init`, `sync-status`,
   `sync-setup`, `sync-pull`, `sync-push`, `pinentry`. JSON on stdout, settings read from
   the vault's record in `shell.json` when not given as options. Anything that
   may ask for a passphrase or a credential runs in a floating terminal that

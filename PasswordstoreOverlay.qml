@@ -1192,7 +1192,14 @@ Item {
           if (kind === "secret")
             setupNote = "Imported a private (secret) key. This seat can decrypt entries encrypted for it."
               + (parsed.deleted ? " The file was shredded." : (importDeleteFile ? " The file could not be deleted; remove it yourself." : ""))
-          else
+          else if (addingSeat) {
+            // The store's current keys plus the newcomer: the next page offers the re-encrypt.
+            seatFprs = Array.isArray(parsed.fingerprints) ? parsed.fingerprints.map(String) : []
+            var union = status && Array.isArray(status.gpgIds) ? status.gpgIds.map(String) : selectedGpg.slice()
+            for (var f = 0; f < seatFprs.length; f++) if (union.indexOf(seatFprs[f]) < 0) union.push(seatFprs[f])
+            selectedGpg = union
+            setupNote = "Imported " + (seatFprs.length > 0 ? fprGroups(seatFprs[0]) : "the key") + ". Read that fingerprint against the one on the other seat's Keys page, group by group, before going on: Enter → Next, then R re-encrypts every entry for both keys; a git vault pushes right after."
+          } else
             setupNote = "Imported a public key (recipient). It cannot decrypt here; select it with your private key for a shared vault."
           gpgImporting = false
           gpgImportKind = ""
@@ -1200,6 +1207,7 @@ Item {
           importPathField.text = ""
         }
         if (op === "gpg-generate" && parsed.status === 124) setupNote = "Still waiting for gpg? Press F5 to rescan"
+        if (op === "gpg-send") setupNote = "The public key " + fprGroups(parsed.fingerprint) + " was handed to LocalSend. On the seat that holds the vault: Keys page, A, pick the received file, compare this fingerprint, re-encrypt."
         if (op === "gpg-export") {
           gpgExporting = false
           gpgExportKind = ""
@@ -1231,6 +1239,13 @@ Item {
         } else {
           reencryptOffered = false
           setupNote = parsed.skipped ? "" : "Store created at " + String(parsed.store || storePath)
+          if (addingSeat && !parsed.skipped) {
+            // The re-encrypt is a commit; the new seat can only pull it once it is pushed.
+            addingSeat = false
+            seatFprs = []
+            if (String(draft.syncBackend || "") === "git") { runSetup("sync-push", ["--quiet"], "Pushing the re-encrypted store…", draft); setupNote = "Re-encrypted for the new seat and pushed. Clone or pull the vault there, and its key reads every entry." }
+            else setupNote = "Re-encrypted for the new seat. Sync the store to it; its key reads every entry."
+          }
           goToStep(5)
         }
         break
@@ -1245,6 +1260,9 @@ Item {
       case "sync-pull":
         syncNote = parsed.ok ? (parsed.skipped ? "" : "Synced") : "Pull failed: " + String(parsed.error || "")
         refresh()
+        break
+      case "sync-push":
+        if (!parsed.ok) setupError = "Push failed: " + String(parsed.error || "")
         break
     }
   }
@@ -1620,6 +1638,23 @@ Item {
     runSetup("gpg-import", ["--file", path].concat(gpgImportKind === "secret" && importDeleteFile ? ["--delete"] : []), busy, draft)
   }
 
+  // A seat joining a shared vault: on the new seat, S hands the public key
+  // of the highlighted key to LocalSend; on the seat that holds the vault,
+  // A imports the received file, shows its fingerprint to compare with the
+  // one on the other screen, and lines up a re-encrypt for both keys.
+  property bool addingSeat: false
+  property var seatFprs: []
+  function fprGroups(fpr) { return String(fpr || "").replace(/(.{4})(?=.)/g, "$1 ") }
+  function sendKey() {
+    if (!cursorKey) { setupError = "Pick a key first"; return }
+    setupError = ""
+    runSetup("gpg-send", ["--gpg-id", String(cursorKey.fpr)], "LocalSend's picker is open in a terminal; the public key goes when you choose the seat…", draft)
+  }
+  function beginAddSeat() {
+    addingSeat = true
+    seatFprs = []
+    beginImport("public")
+  }
   function beginImport(kind) {
     if (!kind) {
       var hasSecret = false
@@ -1819,6 +1854,8 @@ Item {
     if (setupStep === 3 && letter === "u" && !gpgImporting && !gpgExporting) { beginImport("public"); return true }
     if (setupStep === 3 && letter === "p" && !gpgImporting && !gpgExporting) { togglePinentry(); return true }
     if (setupStep === 3 && letter === "e" && !gpgImporting && !gpgExporting) { beginExport("public"); return true }
+    if (setupStep === 3 && letter === "s" && !gpgImporting && !gpgExporting) { sendKey(); return true }
+    if (setupStep === 3 && letter === "a" && !gpgImporting && !gpgExporting) { beginAddSeat(); return true }
     if (setupStep === 3 && letter === "x" && !gpgImporting && !gpgExporting) { beginExport("secret"); return true }
     // Space toggles the acknowledge / delete switch unless a field has it.
     if (setupStep === 3 && gpgExporting && event.key === Qt.Key_Space && !inField) { exportAcknowledged = !exportAcknowledged; return true }
@@ -1872,7 +1909,7 @@ Item {
       case 3: return gpgImporting
         ? "Enter import  ·  Space delete the file afterwards  ·  Esc back to the list"
         : gpgExporting ? (gpgExportKind === "secret" ? "Space acknowledge  ·  Enter export  ·  Esc back" : "Enter export  ·  Esc back")
-        : "↑↓ move  ·  Space select  ·  Enter continue  ·  G generate  ·  I/U import private/public  ·  X/E export private/public  ·  P prompt  ·  F5 rescan"
+        : "↑↓ move  ·  Space select  ·  Enter continue  ·  G generate  ·  I/U import private/public  ·  X/E export private/public  ·  S send to a seat  ·  A add a seat  ·  P prompt  ·  F5 rescan"
       case 4: return reencryptOffered ? "Enter keep the store's keys  ·  R re-encrypt" : "Enter continue"
       default: return "1–4 or ↑↓ backend  ·  Tab fields  ·  P pull on open" + (setupBackend === "rclone" ? "  ·  M copy/sync" : "") + "  ·  Enter apply"
     }
@@ -2912,6 +2949,7 @@ Item {
             visible: !root.gpgImporting && !root.gpgExporting
             text: root.gpgKeys.length > 0
               ? "The store is encrypted for every key you select. One must be yours (secret part here); a shared vault adds teammates' public keys, imported first."
+                + "  Another seat joining this vault: there, S sends its public key here over LocalSend; here, A imports it and lines up the re-encrypt."
               : "gpg has no key yet. Generate one (gpg asks for a name, an e-mail and a passphrase in a terminal) or import a backup."
             opacity: 0.7
             bottomPadding: Style.space(6)
@@ -3028,6 +3066,16 @@ Item {
               text: "Rescan"
               width: (parent.width - parent.columnSpacing) / 2
               onClicked: root.runSetup("gpg-list", [], "", root.draft)
+            }
+            CardButton {
+              text: "Send key to a seat"
+              width: (parent.width - parent.columnSpacing) / 2
+              onClicked: root.sendKey()
+            }
+            CardButton {
+              text: "Add a seat's key"
+              width: (parent.width - parent.columnSpacing) / 2
+              onClicked: root.beginAddSeat()
             }
             CardButton {
               text: "Import private key"
