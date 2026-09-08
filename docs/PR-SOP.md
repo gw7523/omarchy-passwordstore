@@ -65,18 +65,34 @@ What it does, so the images are comparable:
 
 - A **synthetic vault** (empty `*.gpg` files, or three real entries under a
   throwaway key whose passphrase the tool knows, for scenes that decrypt),
-  fixed names, fixed recent list. No real entry is ever on screen.
-- The **same window**: the card, centred, cropped to its own bounds, so
-  nothing behind it is in the image and the size is the card's.
+  fixed names, fixed recent list, and only that vault on the bar entry for
+  the run: no real entry, path, backend or vault name is on screen. The
+  tool refuses to send a key until the helper confirms the card is on the
+  synthetic store, and stops at the first failed step.
+- The **same window**: the card, cropped to the box it publishes itself
+  (`writeCardGeometry`, switched on for the run), so nothing behind it is
+  in the image and the size is the card's.
 - The **same theme and scale**: whatever the seat has; run `before` and
   `after` in one sitting, and say which theme it was in the PR.
 - The **same interaction state**: a scene file is a fixed key script
   (`test/capture.d/<scene>`), so both sides reach the identical state.
 - **Labelled**: each image carries BEFORE or AFTER across its top;
   `--join` puts them side by side.
-- **Safe**: `--branch` detaches the live checkout at the branch and
-  restarts the shell, then puts everything back; the tool aborts before
-  any keystroke if another layer (a menu, a prompt) is up.
+- **Safe**: `--branch` detaches the checkout the plugins symlink points
+  at (not the worktree the tool runs from) at the branch and restarts the
+  shell, then puts everything back, on Ctrl+C as well; the tool aborts
+  before any keystroke if another layer (a menu, a prompt) is up, and the
+  `pin` step only answers a prompt when the card's own pinentry is the sole
+  layer up.
+
+The crop needs the card's box, which the card writes only from the commit
+that added `writeCardGeometry`: a "before" older than that cannot be
+captured by the tool; describe it, or capture it by hand with a fixed
+crop as `CLAUDE.md` explains.
+
+Not capturable this way: the GPG keys page lists the seat's real keyring
+(names, fingerprints); take that one by hand on a seat with a throwaway
+keyring, or describe it in words.
 
 One scene per changed surface: the search card, the row menu, the editor,
 the share card, the setup hub, the GPG page. Add a scene file when a
@@ -88,11 +104,11 @@ tool prints the same guard abort the live tests do.
 
 ## 4. Submit
 
-- Commit the images under `docs/pr/<scene>*.png` on the PR branch: GitHub
-  serves them from `raw.githubusercontent.com/gw7523/omarchy-passwordstore/<branch>/docs/pr/<scene>.png`,
-  which counts as GitHub-hosted and survives a branch rebuild. If the
-  maintainer insists on attachments, drag the same files into the PR
-  description in the browser; the text stays as the tool wrote it.
+- Commit the images under `docs/pr/<scene>*.png` on the PR branch, then
+  attach them to the PR description in the browser (drag and drop): that
+  is what "GitHub-hosted" means to a maintainer, and it survives a
+  rebuilt or force-pushed branch. A `raw.githubusercontent.com` link to
+  the branch works as a stopgap while the branch exists.
 - The PR body, in this order: what changed and why (two paragraphs); a
   **Before / After** section, one joined image per scene with a sentence
   under each saying what differs and why; the security note (what never

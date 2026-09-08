@@ -1,5 +1,3 @@
-# F2: the vaults hub.
+# F2: the vaults hub (only the synthetic vault is on the bar during a capture).
 key -k F2
-key -k Up
-key -k Up
 shot main
