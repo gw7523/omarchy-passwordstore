@@ -146,6 +146,39 @@ sleep 2.2
 out=$("$PINENTRY" --unlock-ok)
 [[ $(jq -r .locked <<<"$out") == false && $(jq -r .tier <<<"$out") == 0 ]] && ok "lockout: --unlock-ok clears the lock and the tier" || bad "lockout: --unlock-ok clears the lock and the tier"
 [[ $(stat -c %a "$work/run/pinentry-omarchy/lockout.json") == 600 ]] && ok "lockout: state is private (600)" || bad "lockout: state is private (600)"
+# A terminal `pass` never reports back; a session that ends on an accepted
+# answer while unwrapping an OpenPGP key (SETKEYINFO n/…) is taken as a
+# success. Anything the agent hands back unchecked (a GET_PASSPHRASE, a
+# symmetric decrypt: u/… or --clear) counts as nothing either way.
+"$PINENTRY" --unlock-failed >/dev/null; "$PINENTRY" --unlock-failed >/dev/null
+reset; printf '{"ok": true, "pin": "x"}' > "$work/answer.json"
+talk 'SETKEYINFO n/ABCDEF0123456789\nGETPIN\nBYE\n' >/dev/null
+[[ $(jq -r .failures <<<"$("$PINENTRY" --lockout-status)") == 0 ]] && ok "lockout: a key-unwrap session ending on an accepted answer clears the count" \
+  || bad "lockout: a key-unwrap session ending on an accepted answer clears the count"
+"$PINENTRY" --unlock-failed >/dev/null
+for shape in 'GETPIN\nBYE\n' 'SETKEYINFO --clear\nGETPIN\nBYE\n' 'SETKEYINFO u/cacheid\nGETPIN\nBYE\n'; do
+  reset; printf '{"ok": true, "pin": "x"}' > "$work/answer.json"; talk "$shape" >/dev/null
+done
+[[ $(jq -r .failures <<<"$("$PINENTRY" --lockout-status)") == 1 ]] && ok "lockout: prompts the agent does not verify (no key, --clear, u/) clear nothing" \
+  || bad "lockout: prompts the agent does not verify (no key, --clear, u/) clear nothing"
+reset; printf '{"ok": false}' > "$work/answer.json"; talk 'SETKEYINFO n/ABCDEF0123456789\nGETPIN\nBYE\n' >/dev/null
+[[ $(jq -r .failures <<<"$("$PINENTRY" --lockout-status)") == 1 ]] && ok "lockout: a cancelled prompt clears nothing" || bad "lockout: a cancelled prompt clears nothing"
+reset; printf '{"ok": true}' > "$work/answer.json"; talk 'CONFIRM\nBYE\n' >/dev/null; talk 'MESSAGE\nBYE\n' >/dev/null
+[[ $(jq -r .failures <<<"$("$PINENTRY" --lockout-status)") == 1 ]] && ok "lockout: CONFIRM and MESSAGE sessions clear nothing" || bad "lockout: CONFIRM and MESSAGE sessions clear nothing"
+"$PINENTRY" --unlock-ok >/dev/null
+reset; printf '{"ok": true, "pin": "x"}' > "$work/answer.json"
+talk 'SETKEYINFO n/ABCDEF0123456789\nGETPIN\nSETERROR bad (2 of 3)\nGETPIN\nSETERROR bad (3 of 3)\nGETPIN\nBYE\n' >/dev/null
+[[ $(jq -r .failures <<<"$("$PINENTRY" --lockout-status)") == 2 ]] && ok "lockout: a session that reached the third try is not taken as a success" \
+  || bad "lockout: a session that reached the third try is not taken as a success"
+"$PINENTRY" --unlock-ok >/dev/null; "$PINENTRY" --unlock-failed >/dev/null
+reset; printf '{"ok": true, "pin": "x"}' > "$work/answer.json"
+talk 'SETKEYINFO n/ABCDEF0123456789\nSETREPEAT Repeat:\nGETPIN\nBYE\n' >/dev/null
+[[ $(jq -r .failures <<<"$("$PINENTRY" --lockout-status)") == 1 ]] && ok "lockout: setting a new passphrase is neither a failure nor a success" \
+  || bad "lockout: setting a new passphrase is neither a failure nor a success"
+"$PINENTRY" --set-policy '{"attempts": 2, "lockoutSec": 30}' >/dev/null; "$PINENTRY" --unlock-failed >/dev/null; "$PINENTRY" --unlock-failed >/dev/null
+reset; printf '{"ok": true, "pin": "x"}' > "$work/answer.json"; talk 'SETKEYINFO n/ABCDEF0123456789\nGETPIN\nBYE\n' >/dev/null
+[[ $(jq -r .locked <<<"$("$PINENTRY" --lockout-status)") == true && $(jq -r .tier <<<"$("$PINENTRY" --lockout-status)") == 1 ]] \
+  && ok "lockout: a session while locked leaves the lock and the tier alone" || bad "lockout: a session while locked leaves the lock and the tier alone"
 
 echo
 printf '%d passed, %d failed\n' "$passed" "$failed"
