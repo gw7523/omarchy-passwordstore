@@ -397,6 +397,9 @@ grep -q -- "--import -- $work/secret.asc" "$work/gpg.calls" && ok "gpg-import: t
 
 # --- gpg-export ----------------------------------------------------------
 
+out=$("$SETUP" gpg-export --kind public --gpg-id alice@example.com --file "$work/anything.asc")
+check "gpg-export: a name or e-mail is refused (it can match several keys)" '.ok != true and (.error | test("fingerprint"))' "$out"
+
 reset
 pub=$work/alice.pub.asc
 out=$("$SETUP" gpg-export --kind public --gpg-id "$ALICE" --file "$pub")
@@ -451,11 +454,20 @@ check "install: refuses a package name with shell characters" '.error | test("No
 "$SETUP" >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "no command exits 2" || bad "no command exits 2"
 "$SETUP" status --bogus >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "an unknown option exits 2" || bad "an unknown option exits 2"
 
-# gpg-import --delete: the file is gone afterwards.
-printf 'placeholder\n' > "$work/todelete.asc"
+# gpg-import --delete: the file is gone afterwards; a symlink is unlinked,
+# never shredded through (the target could be the backup); a public key
+# file is left alone.
+printf -- '-----BEGIN PGP PRIVATE KEY BLOCK-----\nplaceholder\n' > "$work/todelete.asc"
 out=$("$SETUP" gpg-import --file "$work/todelete.asc" --delete)
 check "gpg-import --delete reports deleted" '.deleted == true' "$out"
 [[ ! -e $work/todelete.asc ]] && ok "gpg-import --delete removes the file" || bad "gpg-import --delete removes the file"
+printf -- '-----BEGIN PGP PRIVATE KEY BLOCK-----\nthe backup\n' > "$work/backup.asc"; ln -s "$work/backup.asc" "$work/link.asc"
+"$SETUP" gpg-import --file "$work/link.asc" --delete >/dev/null
+[[ ! -L $work/link.asc && $(sed -n 2p "$work/backup.asc") == "the backup" ]] && ok "gpg-import --delete on a symlink unlinks it and leaves the target intact"
+printf -- '-----BEGIN PGP PUBLIC KEY BLOCK-----\nplaceholder\n' > "$work/pub-keep.asc"
+"$SETUP" gpg-import --file "$work/pub-keep.asc" --delete >/dev/null
+[[ -e $work/pub-keep.asc ]] && ok "gpg-import --delete leaves a public key file alone" || bad "gpg-import --delete leaves a public key file alone" \
+  || bad "gpg-import --delete on a symlink unlinks it and leaves the target intact"
 
 # --- pinentry ---------------------------------------------------------------
 

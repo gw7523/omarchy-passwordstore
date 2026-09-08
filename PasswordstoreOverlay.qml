@@ -1044,6 +1044,7 @@ Item {
           var kind = String(parsed.kind || (parsed.importedSecret ? "secret" : "public"))
           if (kind === "secret")
             setupNote = "Imported a private (secret) key. This seat can decrypt entries encrypted for it."
+              + (parsed.deleted ? " The file was shredded." : (importDeleteFile ? " The file could not be deleted; remove it yourself." : ""))
           else
             setupNote = "Imported a public key (recipient). It cannot decrypt here; select it with your private key for a shared vault."
           gpgImporting = false
@@ -1509,7 +1510,10 @@ Item {
     if (path === "") { setupError = "Where should the file go?"; return }
     if (gpgExportKind === "secret" && !exportAcknowledged) { setupError = "Acknowledge the warning first (Space)"; return }
     setupError = ""
-    runSetup("gpg-export", ["--kind", gpgExportKind, "--gpg-id", String(cursorKey.fpr), "--file", path], "", draft)
+    // Busy: the card hides and drops its grab, so pinentry can ask for the
+    // secret key's passphrase, and Esc cannot half-abandon the write.
+    runSetup("gpg-export", ["--kind", gpgExportKind, "--gpg-id", String(cursorKey.fpr), "--file", path],
+             gpgExportKind === "secret" ? "Writing the private key (pinentry may ask)…" : "Writing the public key…", draft)
   }
 
   function inspectImportPath() {
@@ -1657,15 +1661,16 @@ Item {
     }
     if (setupStep === 2 && event.key === Qt.Key_Space) { toggleDep(depIndex); return true }
     if (setupStep === 2 && letter === "s" && !requiredDepsMissing) { goToStep(3); return true }
-    if (setupStep === 3 && event.key === Qt.Key_Space) { toggleGpg(gpgIndex); return true }
-    if (setupStep === 3 && letter === "g") { generateKey(); return true }
-    if (setupStep === 3 && letter === "i") { beginImport("secret"); return true }
-    if (setupStep === 3 && letter === "u") { beginImport("public"); return true }
+    if (setupStep === 3 && event.key === Qt.Key_Space && !gpgImporting && !gpgExporting) { toggleGpg(gpgIndex); return true }
+    if (setupStep === 3 && letter === "g" && !gpgImporting && !gpgExporting) { generateKey(); return true }
+    if (setupStep === 3 && letter === "i" && !gpgImporting && !gpgExporting) { beginImport("secret"); return true }
+    if (setupStep === 3 && letter === "u" && !gpgImporting && !gpgExporting) { beginImport("public"); return true }
     if (setupStep === 3 && letter === "p" && !gpgImporting && !gpgExporting) { togglePinentry(); return true }
     if (setupStep === 3 && letter === "e" && !gpgImporting && !gpgExporting) { beginExport("public"); return true }
     if (setupStep === 3 && letter === "x" && !gpgImporting && !gpgExporting) { beginExport("secret"); return true }
-    if (setupStep === 3 && gpgExporting && event.key === Qt.Key_Space) { exportAcknowledged = !exportAcknowledged; return true }
-    if (setupStep === 3 && gpgImporting && event.key === Qt.Key_Space) { importDeleteFile = !importDeleteFile; return true }
+    // Space toggles the acknowledge / delete switch unless a field has it.
+    if (setupStep === 3 && gpgExporting && event.key === Qt.Key_Space && !inField) { exportAcknowledged = !exportAcknowledged; return true }
+    if (setupStep === 3 && gpgImporting && event.key === Qt.Key_Space && !inField) { importDeleteFile = !importDeleteFile; return true }
     if (setupStep === 4 && letter === "r") { reencrypt(); return true }
     if (setupStep === 5 && letter === "p") { togglePull(); return true }
     if (setupStep === 5 && letter === "m" && setupBackend === "rclone") {
