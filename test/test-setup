@@ -496,7 +496,8 @@ git -C "$sa" pull -q --rebase 2>/dev/null; printf 'A-edit-2\n' > "$sa/web/site.g
 printf 'B-edit-2\n' > "$sb/web/site.gpg"; git -C "$sb" commit -qam "B edits site again"
 out=$("$SETUP" sync-pull --store "$sb" --backend git)
 copies_arr=("$sb/web/site (conflict from origin, "*.gpg); copies=${#copies_arr[@]}
-[[ $(jq -r '.ok' <<<"$out") == true && $copies -eq 2 && $(cat "$sb/web/$copy1") == A-edit && $(cat "$sb/web/site.gpg") == B-edit-2 ]] \
+copy2=""; for c in "${copies_arr[@]}"; do [[ ${c##*/} != "$copy1" ]] && copy2=$c; done
+[[ $(jq -r '.ok' <<<"$out") == true && $copies -eq 2 && $(cat "$sb/web/$copy1") == A-edit && $(cat "$copy2" 2>/dev/null) == A-edit-2 && $(cat "$sb/web/site.gpg") == B-edit-2 ]] \
   && ok "git conflict: a second conflict gets its own copy, the first stays" || bad "git conflict: a second conflict gets its own copy, the first stays ($copies copies; $out)"
 # The other seat pulls those copies: it is told, and nothing is a conflict there.
 git -C "$sb" push -q
@@ -527,11 +528,17 @@ check "restore: reports ok" '.ok == true and .entry == "web/site"' "$out"
 out=$("$SETUP" restore --store "$sb" --entry web/site --sha deadbeef)
 check "restore: an unknown version is an error" '.ok != true' "$out"
 "$SETUP" history --store "$sb" --entry ../x >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "history refuses a traversal name" || bad "history refuses a traversal name"
-# Renamed with pass mv: the history follows, and a version from before the
-# rename restores under the new name, into a directory that is gone.
+"$SETUP" history --store "$sb" --entry 'web/*' >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "history refuses a glob name" || bad "history refuses a glob name"
+# Renamed (pass mv is a git mv): the history follows, the rename commit
+# itself restores, and a version from before the rename restores under
+# the new name, into a directory that is gone.
 git -C "$sb" mv web/site.gpg web/moved.gpg; git -C "$sb" commit -qm "B renames site"
 out=$("$SETUP" history --store "$sb" --entry web/moved)
 check "history: follows a rename" '(.commits | map(.subject) | index("base")) != null' "$out"
+rename_sha=$(jq -r '.commits[] | select(.subject == "B renames site") | .sha' <<<"$out")
+printf 'later\n' > "$sb/web/moved.gpg"; git -C "$sb" commit -qam "B edits moved"
+out=$("$SETUP" restore --store "$sb" --entry web/moved --sha "${rename_sha:0:7}")
+[[ $(jq -r .ok <<<"$out") == true && $(cat "$sb/web/moved.gpg") == v0 ]] && ok "restore: the rename commit itself, by a short sha" || bad "restore: the rename commit itself, by a short sha ($out)"
 rm -rf "$sb/web"; git -C "$sb" commit -qam "B removes web"
 out=$("$SETUP" restore --store "$sb" --entry web/moved --sha "$base_sha")
 [[ $(jq -r .ok <<<"$out") == true && $(cat "$sb/web/moved.gpg" 2>/dev/null) == v0 ]] && ok "restore: a pre-rename version lands under the new name, parent made" || bad "restore: a pre-rename version lands under the new name, parent made ($out)"
@@ -554,7 +561,7 @@ printf '%s\n' "# team" "carol@example.com" "$ALICE" > "$s5/.gpg-id"
 [[ $(git -C "$s5" config user.signingkey) == "$ALICE" ]] && ok "gitSign: picks the id with a secret key here, past comments and others' keys" || bad "gitSign: picks the id with a secret key here, past comments and others' keys ($(git -C "$s5" config user.signingkey))"
 printf '%s\n' "carol@example.com" > "$s5/.gpg-id"
 "$SETUP" sync-setup --store "$s5" --vault personal --backend git --git-remote "file://$remote_e" >/dev/null 2>&1
-[[ -z $(git -C "$s5" config commit.gpgsign) ]] && ok "gitSign: no signable key means no gpgsign" || bad "gitSign: no signable key means no gpgsign"
+[[ -z $(git -C "$s5" config commit.gpgsign) && -z $(git -C "$s5" config user.signingkey) ]] && ok "gitSign: no signable key means no gpgsign and no signingkey" || bad "gitSign: no signable key means no gpgsign and no signingkey"
 cp "$work/shell.json.keep" "$XDG_CONFIG_HOME/omarchy/shell.json"
 
 # --- pinentry ---------------------------------------------------------------

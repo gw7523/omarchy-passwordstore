@@ -401,6 +401,7 @@ Item {
   function dismiss() {
     root.opened = false
     if (root.mode === "edit") root.resetEditor()
+    if (root.mode === "history") root.leaveHistory()
     if (root.mode === "share" && !root.shareSending) root.leaveShare(true)
     if (root.shell && typeof root.shell.hide === "function")
       root.shell.hide((root.manifest && root.manifest.id) || root.pluginId)
@@ -454,7 +455,7 @@ Item {
   // shows the folder under it; the username is only inside the file.
   function splitName(name) {
     var slash = name.lastIndexOf("/")
-    var conflict = / \(conflict from origin(, [0-9a-f]{7}( #[0-9]+)?)?\)$/.test(name)
+    var conflict = / \(conflict from origin(, [^)]+)?\)$/.test(name)
     if (usernameInPath) {
       var user = slash >= 0 ? name.slice(slash + 1) : ""
       return { name: name, title: slash >= 0 ? name.slice(0, slash) : name, username: user, subtitle: user, conflict: conflict }
@@ -711,7 +712,8 @@ Item {
       var stillHere = root.mode === "history" && root.historyEntry === root.restoreEntry
       if (exitCode !== 0 || !parsed || !parsed.ok) { if (stillHere) root.historyError = String((parsed && parsed.error) || "Could not restore"); return }
       // The restore is a commit: push it like any change, then show the new history.
-      if (root.restoreVault && String(root.restoreVault.syncBackend || "") === "git") root.runSetup("sync-push", ["--quiet"], "", root.restoreVault)
+      // Not --quiet: a push that fails must say so, on the card and as a notification.
+      if (root.restoreVault && String(root.restoreVault.syncBackend || "") === "git") root.runSetup("sync-push", [], "", root.restoreVault)
       root.refresh()
       if (stillHere) root.openHistory({ name: root.historyEntry })
     }
@@ -1343,6 +1345,11 @@ Item {
       case "sync-pull":
         syncNote = parsed.ok ? (parsed.skipped ? "" : "Synced") : "Pull failed: " + String(parsed.error || "")
         refresh()
+        break
+      case "sync-push":
+        if (parsed.ok) break
+        if (mode === "history") historyError = "Restored here, but the push failed: " + String(parsed.error || "")
+        else setupError = "Push failed: " + String(parsed.error || "")
         break
     }
   }
@@ -3317,7 +3324,7 @@ Item {
               text: "pass git init if needed, then push -u origin; an existing remote with commits is fetched instead. Credentials are git's and ssh's own; the first push runs in a terminal."
                 + "  Pull --rebase on open: " + (root.setupGitPull ? "on" : "off") + " (P)."
                 + "  Signed commits with the vault's key: " + (root.setupGitSign ? "on" : "off") + " (K), so a teammate can verify who pushed what."
-                + "  Two seats editing one entry offline: this seat's version stays, the other's lands beside it as “(conflict from origin)”."
+                + "  Two seats editing one entry offline: this seat's version stays, the other's lands beside it as “(conflict from origin, <commit>)”."
               opacity: 0.7
             }
 
