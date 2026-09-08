@@ -127,7 +127,7 @@ Item {
   // layout where the last segment is the entry and the username lives
   // inside the file.
   readonly property bool usernameInPath: boolSetting("usernameInPath", true)
-  readonly property bool autofillSubmit: boolSetting("autofillSubmit", true)
+  readonly property bool autofillSubmit: boolSetting("autofillSubmit", false)
 
   // The lockout pinentry-omarchy reports through status: while it holds,
   // nothing that decrypts is attempted and the legend shows the wait.
@@ -373,7 +373,18 @@ Item {
   // github.com/jack. Read once per open, never stored.
   property string windowTitle: ""
   property string windowClass: ""
+  property string windowAddress: ""
   property bool windowMatched: false
+  property bool preselectArmed: false   // until the user touches the selection
+  property bool autofillAsked: false    // Alt+Enter on a window-picked row asks once
+  // Only a browser's title says which site is open; a terminal's title
+  // holding "github.com" (a path, a git log) must not pick an entry.
+  readonly property var browserClasses: ["chromium", "chrome", "google-chrome", "brave", "firefox", "librewolf", "zen", "vivaldi", "epiphany", "microsoft-edge", "org.mozilla.firefox", "floorp", "waterfox"]
+  readonly property bool windowIsBrowser: {
+    var c = windowClass.toLowerCase()
+    for (var i = 0; i < browserClasses.length; i++) if (c === browserClasses[i] || c.indexOf(browserClasses[i]) === 0) return true
+    return false
+  }
   Process {
     id: windowProcess
     running: false
@@ -384,26 +395,34 @@ Item {
       try { parsed = JSON.parse(String(windowStdout.text || "")) } catch (e) { parsed = null }
       root.windowTitle = parsed && parsed.title ? String(parsed.title) : ""
       root.windowClass = parsed && parsed.class ? String(parsed.class) : ""
+      root.windowAddress = parsed && parsed.address ? String(parsed.address) : ""
       root.preselectByWindow()
     }
   }
 
-  // Pick the entry whose name appears in the window's title or app id;
-  // the longest such name wins, and nothing happens once the user typed.
+  // Pick the entry whose name appears as a whole word in a browser's tab
+  // title (the browser's own name stripped): github.com or github in
+  // "Sign in · GitHub". The longest match wins. A tab title is the site's
+  // to write, so this is a suggestion: autofill from it asks once, and any
+  // key the user presses on the list disarms it.
+  readonly property string windowTitleBare: windowTitle.replace(/\s*[-–—·|]\s*(Mozilla Firefox|Firefox|Chromium|Google Chrome|Brave|Vivaldi|Zen Browser|LibreWolf|Microsoft Edge)\s*$/i, "")
   function preselectByWindow() {
-    if (filterText !== "" || mode !== "search" || rows.length === 0) return
-    var hay = (windowTitle + " " + windowClass).toLowerCase()
+    if (!preselectArmed || menuOpen || filterText !== "" || mode !== "search" || rows.length === 0) return
+    if (!windowIsBrowser) return
+    var hay = " " + windowTitleBare.toLowerCase().replace(/[^a-z0-9.]+/g, " ") + " "
     if (hay.trim() === "") return
     var best = -1, bestLen = 0
     for (var i = 0; i < rows.length; i++) {
-      var title = String(rows[i].title || "").toLowerCase()
-      var bare = title.replace(/^www\./, "").replace(/\.[a-z]+$/, "")   // github.com -> github
-      if (title.length >= 3 && hay.indexOf(title) >= 0 && title.length > bestLen) { best = i; bestLen = title.length }
-      else if (bare.length >= 4 && hay.indexOf(bare) >= 0 && bare.length > bestLen) { best = i; bestLen = bare.length }
+      var title = String(rows[i].title || "").toLowerCase().replace(/^www\./, "")
+      var stem = title.replace(/\.[a-z]+$/, "")   // github.com -> github
+      if (title.length >= 4 && hay.indexOf(" " + title + " ") >= 0 && title.length > bestLen) { best = i; bestLen = title.length }
+      else if (stem.length >= 4 && stem !== title && hay.indexOf(" " + stem + " ") >= 0 && stem.length > bestLen) { best = i; bestLen = stem.length }
     }
     windowMatched = best >= 0
-    if (best >= 0) selectAbsolute(best)
+    autofillAsked = false
+    if (best >= 0) { cursorActive = true; selectedIndex = best; resultList.positionViewAtIndex(best, ListView.Contain) }
   }
+  function disarmPreselect() { preselectArmed = false; windowMatched = false; autofillAsked = false }
 
   function open(payloadJson) {
     if (root.mode === "edit") root.resetEditor()
@@ -413,6 +432,9 @@ Item {
     root.selectedIndex = 0
     root.cursorActive = true
     root.windowMatched = false
+    root.windowAddress = ""
+    root.preselectArmed = true
+    root.autofillAsked = false
     root.opened = true
     windowProcess.running = true
     root.autoRoute = true
@@ -432,6 +454,7 @@ Item {
 
   function close() {
     root.opened = false
+    root.closeMenu()
     if (root.mode === "edit") root.resetEditor()
     // dismiss() reaches here through shell.hide(); a send in flight keeps its file.
     if (root.mode === "share" && !root.shareSending) root.leaveShare(true)
@@ -439,6 +462,7 @@ Item {
 
   function dismiss() {
     root.opened = false
+    root.closeMenu()
     if (root.mode === "edit") root.resetEditor()
     if (root.mode === "share" && !root.shareSending) root.leaveShare(true)
     if (root.shell && typeof root.shell.hide === "function")
@@ -544,6 +568,7 @@ Item {
 
   function setFilter(text) {
     if (text === filterText) return
+    disarmPreselect()
     filterText = text
     selectedIndex = 0
     cursorActive = true
@@ -558,7 +583,7 @@ Item {
     var pasted = clipboardProbe.text.replace(/\s+/g, " ").trim()
     clipboardProbe.text = ""
     // A pasted URL searches by its host, without the www.
-    var m = pasted.match(/^https?:\/\/([^\/:?#]+)/i)
+    var m = pasted.match(/^https?:\/\/(?:[^\/?#@]*@)?(\[[^\]]+\]|[^\/:?#]+)/i)
     if (m) pasted = m[1].toLowerCase().replace(/^www\./, "")
     if (pasted !== "") setFilter(filterText + pasted)
   }
@@ -567,6 +592,7 @@ Item {
 
   function select(delta) {
     if (rows.length === 0) return
+    disarmPreselect()
     cursorActive = true
     selectedIndex = Math.max(0, Math.min(rows.length - 1, selectedIndex + delta))
     resultList.positionViewAtIndex(selectedIndex, ListView.Contain)
@@ -574,6 +600,7 @@ Item {
 
   function selectAbsolute(index) {
     if (rows.length === 0) return
+    disarmPreselect()
     cursorActive = true
     selectedIndex = Math.max(0, Math.min(rows.length - 1, index))
     resultList.positionViewAtIndex(selectedIndex, ListView.Contain)
@@ -664,7 +691,10 @@ Item {
                    "--username-keys", usernameKeys]
     if (storeDir !== "") command.push("--store", storeDir)
     if (!notifyOnCopy) command.push("--quiet")
-    if (action === "autofill" && !autofillSubmit) command.push("--no-submit")
+    if (action === "autofill") {
+      if (autofillSubmit) command.push("--submit")
+      if (windowAddress !== "") command.push("--window", windowAddress)
+    }
     // The push after a change is the helper's job, once the terminal closes;
     // it looks the vault's backend up by id.
     if (terminalAction && syncActive) command.push("--sync", "--vault", activeVaultId)
@@ -676,7 +706,12 @@ Item {
     actionProcess.running = true
   }
 
-  function activateSelected(action) { runAction(action, selectedEntry) }
+  function activateSelected(action) {
+    // A row the window picked is a suggestion; typing a password into that
+    // window takes a second Alt+Enter, with the title on screen.
+    if (action === "autofill" && windowMatched && preselectArmed && !autofillAsked) { autofillAsked = true; return }
+    runAction(action, selectedEntry)
+  }
 
   // --- the row menu ---------------------------------------------------------
 
@@ -700,7 +735,8 @@ Item {
     menuIndex = 0
     menuOpen = true
   }
-  function closeMenu() { menuOpen = false }
+  function closeMenu() { menuOpen = false; menuIndex = 0 }
+  onMenuRowsChanged: menuIndex = Math.max(0, Math.min(menuRows.length - 1, menuIndex))
   function menuKey(event) {
     var ctrl = event.modifiers & Qt.ControlModifier
     if (event.key === Qt.Key_Escape || event.key === Qt.Key_Left) { closeMenu(); return true }
@@ -991,7 +1027,8 @@ Item {
     if (!validEntryName(name)) { editError = "That name will not do as a pass entry"; return }
     if (name !== editEntry && entries.indexOf(name) >= 0) { editError = "There is already an entry named " + name; return }
     var url = urlField.text.trim()
-    if (url !== "" && !/^https?:\/\//i.test(url)) url = "https://" + url
+    if (url !== "" && !/^[a-z][a-z0-9+.-]*:/i.test(url)) url = "https://" + url
+    if (url !== "" && !/^https?:\/\//i.test(url)) { editError = "The URL has to start with http:// or https://"; return }
     var payload = {
       password: passwordField.text,
       username: user,
@@ -1991,6 +2028,7 @@ Item {
     if (status && status.secretKeyPresent === false)
       line += "\nNo secret key for " + storeKeyLabel + " in this keyring (F2)"
     if (locked) line += "\nLocked after too many wrong passphrases  ·  " + formatRemaining(lockoutRemaining)
+    if (autofillAsked && selectedEntry) line += "\nAlt+Enter again types " + selectedEntry.name + " into “" + windowTitleBare + "”"
     return line
   }
 
@@ -2184,7 +2222,8 @@ Item {
           var shift = event.modifiers & Qt.ShiftModifier
 
           if (root.menuOpen) {
-            if (root.menuKey(event)) event.accepted = true
+            root.menuKey(event)
+            event.accepted = true   // nothing falls through to the list or Qt focus while the menu is up
             return
           }
           if (event.key === Qt.Key_Escape) {
@@ -2290,7 +2329,7 @@ Item {
                 ? (root.filterText ? root.rows.length + " / " + root.entries.length : String(root.entries.length))
                 : ""
               var name = root.vaults.length > 1 || root.vaultsOnRecord ? root.activeVault.name : ""
-              var hint = root.windowMatched && root.filterText === "" ? "for " + (root.windowClass || "this window") : ""
+              var hint = root.windowMatched && root.preselectArmed ? "for “" + (root.windowTitleBare.length > 28 ? root.windowTitleBare.slice(0, 27) + "…" : root.windowTitleBare) + "”" : ""
               return [hint, name, count].filter(function(s) { return s !== "" }).join("  ·  ")
             }
             color: root.foreground

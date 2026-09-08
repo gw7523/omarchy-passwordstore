@@ -37,6 +37,10 @@ case $1 in
     case "$2" in
       site/bob) printf 'p4ss w0rd!\nusername: bob\ncreated: 2026-01-02T03:04:05+00:00\nmodified: 2026-02-03T04:05:06+00:00\nurl: https://example.com\notpauth://totp/x?secret=ABC\n\nfirst note line\nsecond\n' ;;
       crlf/one) printf 'p4ss\r\nusername: carol\r\n\r\nhello\r\n' ;;
+      ctl/one) printf 'bad\tpass\nusername: dan\n' ;;
+      urls/notes) printf 'x\nusername: e\n\nurl: https://evil.example\n' ;;
+      urls/upper) printf 'x\nURL: HTTPS://Example.com/$(id)\n' ;;
+      urls/js) printf 'x\nurl: javascript:alert(1)\n' ;;
       *) printf 'hunter2\nlogin: alice@example.com\nurl: https://example.com\n' ;;
     esac ;;
   otp) [[ $2 == code ]] && echo 123456; exit 0 ;;
@@ -80,7 +84,7 @@ failed=0
 ok()  { printf '  ok    %s\n' "$1"; passed=$(( passed + 1 )); }
 bad() { printf '  FAIL  %s\n' "$1"; failed=$(( failed + 1 )); }
 reset() {
-  rm -f "$work"/{pass.calls,clipboard,cleared,typed,notify.calls,recent,wlcopy.calls,inserted,xdg-open.calls}
+  rm -f "$work"/{pass.calls,clipboard,cleared,typed,notify.calls,recent,wlcopy.calls,inserted,xdg-open.calls,hyprctl.calls}
   # Omarchy's clipboard history, as if an older wl-copy had let the password in.
   printf '[{"type":"text","text":"keep me"},{"type":"text","text":"hunter2"},{"type":"image","path":"/tmp/x.png"}]\n' \
     > "$work/state/omarchy/clipboard-history.json"
@@ -178,19 +182,57 @@ reset
 [[ $(cat "$work/typed" 2>/dev/null) == "alice@example.com" ]] && ok "type-username types the username" \
   || bad "type-username types the username"
 
+# hyprctl stand-in: no lock layer, the active window is 0xabc unless
+# $WORK/active says otherwise; dispatches are recorded.
+cat > "$work/bin/hyprctl" <<'SHIM'
+#!/bin/bash
+case $1 in
+  layers) cat "$WORK/layers" 2>/dev/null || printf 'namespace: omarchy-bar\n' ;;
+  activewindow) printf '{"address":"%s","class":"chromium","title":"Sign in"}\n' "$(cat "$WORK/active" 2>/dev/null || echo 0xabc)" ;;
+  dispatch) printf '%s\n' "$*" >> "$WORK/hyprctl.calls" ;;
+esac
+SHIM
+chmod +x "$work/bin/hyprctl"
 reset
-"$ACTION" autofill web/site --quiet >/dev/null 2>&1
-[[ $(cat "$work/typed" 2>/dev/null) == "alice@example.com<Tab>hunter2<Return>" ]] && ok "autofill types username, Tab, password, Enter" \
-  || bad "autofill types username, Tab, password, Enter ($(cat "$work/typed" 2>/dev/null))"
+"$ACTION" autofill web/site --submit --window 0xabc --quiet >/dev/null 2>&1
+[[ $(cat "$work/typed" 2>/dev/null) == "alice@example.com<Tab>hunter2<Return>" ]] && ok "autofill --submit types username, Tab, password, Enter" \
+  || bad "autofill --submit types username, Tab, password, Enter ($(cat "$work/typed" 2>/dev/null))"
+grep -q 'dispatch focuswindow address:0xabc' "$work/hyprctl.calls" && ok "autofill refocuses the window the card saw first" || bad "autofill refocuses the window the card saw first"
 reset
-"$ACTION" autofill web/site --no-submit --quiet >/dev/null 2>&1
-[[ $(cat "$work/typed" 2>/dev/null) == "alice@example.com<Tab>hunter2" ]] && ok "autofill --no-submit leaves the Enter out" \
-  || bad "autofill --no-submit leaves the Enter out"
+"$ACTION" autofill web/site --window 0xabc --quiet >/dev/null 2>&1
+[[ $(cat "$work/typed" 2>/dev/null) == "alice@example.com<Tab>hunter2" ]] && ok "autofill without --submit leaves the Enter out (the default)" \
+  || bad "autofill without --submit leaves the Enter out (the default)"
+reset; echo 0xdef > "$work/active"
+"$ACTION" autofill web/site --window 0xabc --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/typed ]] && grep -q 'is gone' "$work/notify.calls" && ok "autofill types nothing when the window it was opened from is gone" \
+  || bad "autofill types nothing when the window it was opened from is gone"
+rm -f "$work/active"
+reset; printf 'namespace: omarchy-bar\nnamespace: omarchy-lock\n' > "$work/layers"
+"$ACTION" autofill web/site --window 0xabc --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/typed ]] && ok "autofill types nothing while a lock layer is up" || bad "autofill types nothing while a lock layer is up"
+rm -f "$work/layers"
+reset
+"$ACTION" autofill crlf/one --quiet >/dev/null 2>&1
+[[ $(cat "$work/typed" 2>/dev/null) == "carol<Tab>p4ss" ]] && ok "autofill strips CR from a CRLF entry" || bad "autofill strips CR from a CRLF entry ($(cat "$work/typed" 2>/dev/null))"
+reset
+"$ACTION" autofill ctl/one --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/typed ]] && ok "autofill refuses a password with control characters" || bad "autofill refuses a password with control characters"
 reset
 "$ACTION" open-url web/site --quiet >/dev/null 2>&1
 [[ $(cat "$work/xdg-open.calls" 2>/dev/null) == "https://example.com" ]] && ok "open-url opens the url: line" || bad "open-url opens the url: line"
 reset
-"$ACTION" open-url site/bob --quiet >/dev/null 2>&1; [[ $? -eq 0 ]] && ok "open-url takes the url: of an editor-format entry" || bad "open-url takes the url: of an editor-format entry"
+"$ACTION" open-url site/bob --quiet >/dev/null 2>&1
+[[ $(cat "$work/xdg-open.calls" 2>/dev/null) == "https://example.com" ]] && ok "open-url takes the url: of an editor-format entry" || bad "open-url takes the url: of an editor-format entry"
+reset
+"$ACTION" open-url urls/notes --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/xdg-open.calls ]] && ok "open-url ignores a url: in the notes" || bad "open-url ignores a url: in the notes"
+reset
+"$ACTION" open-url urls/upper --quiet >/dev/null 2>&1
+[[ $(cat "$work/xdg-open.calls" 2>/dev/null) == 'HTTPS://Example.com/$(id)' ]] && ok "open-url takes an upper-case scheme and hands metacharacters to xdg-open as one argument" \
+  || bad "open-url takes an upper-case scheme and hands metacharacters to xdg-open as one argument"
+reset
+"$ACTION" open-url urls/js --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/xdg-open.calls ]] && ok "open-url refuses a javascript: url" || bad "open-url refuses a javascript: url"
 
 reset
 "$ACTION" copy-password missing --quiet >/dev/null 2>&1

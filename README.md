@@ -206,13 +206,18 @@ count as nothing.
 
 ## Opening the card from a login page
 
-The card notes which window it was opened from and preselects the entry
-whose name appears in that window's title or app id: a browser tab titled
-"Sign in · GitHub" lands on `github.com/jack`, the header says `for
-chromium`. Type anything and the match is forgotten. `Alt+Enter` then types
-the username, `Tab`, the password and `Enter` into that window (wtype; the
-secret goes over its stdin). Add a `url:` to the entry and `Alt+L` opens
-it; the editor has a field for it.
+The card notes which window it was opened from. When that is a browser,
+it preselects the entry whose name appears as a word in the tab's title:
+"Sign in · GitHub" lands on `github.com/jack`, and the header shows the
+title it matched. A tab title is the site's to write, so this is only a
+suggestion: any key on the list forgets it, and `Alt+Enter` on a row the
+window picked asks for a second `Alt+Enter`, with the title on screen.
+`Alt+Enter` then refocuses that same window by address (nothing is typed
+if it is gone, or if a lock screen or a prompt has the keyboard), waits
+for the chord to be released, and types the username, `Tab` and the
+password (wtype; the secret goes over its stdin); `Enter` only with
+`autofillSubmit`, off by default. Add a `url:` to the entry and `Alt+L`
+opens it; the editor has a field for it.
 
 ## Sharing an entry
 
@@ -236,7 +241,7 @@ they received.
 | `↑` `↓` `Ctrl+J/K/N/P`   | Move the cursor; `PageUp/Down`, `Home`, `End` jump       |
 | `Enter`                  | Copy the password; the clipboard clears after `clipTimeSec` and the history never sees it |
 | `Alt+U`                  | Copy the username                                        |
-| `Alt+Enter`              | Autofill: type the username, `Tab`, the password and `Enter` into the window you came from (`autofillSubmit` off: no `Enter`) |
+| `Alt+Enter`              | Autofill: type the username, `Tab` and the password into the window you came from (`autofillSubmit` on: `Enter` too). On a row the window picked, a second `Alt+Enter` confirms |
 | `→`                      | A menu of everything that can be done with the row, keys alongside |
 | `Alt+L`                  | Open the entry's `url:` in the browser                   |
 | `Alt+O`                  | Copy an OTP code (`pass otp`)                            |
@@ -326,7 +331,7 @@ string, which both the card and the helper read back as the array.
 | `lockSessionOnLockout` | `false`                | Also lock the session (`omarchy-system-lock`) at the longest tier.     |
 | `lockoutNoLoopback` | `false`                   | Make gpg-agent refuse `--pinentry-mode loopback`, which bypasses the prompt and its count. Breaks tools that rely on loopback. |
 | `allowTyping`    | `true`                       | Enable `Alt+Enter` autofill and `Ctrl+Enter` / `Ctrl+Shift+Enter` typing (needs `wtype`). |
-| `autofillSubmit` | `true`                       | Autofill ends with `Enter`. Off, it stops after the password.          |
+| `autofillSubmit` | `false`                      | Autofill ends with `Enter`. Off, it stops after the password.          |
 | `notifyOnCopy`   | `true`                       | Notify when something was copied, naming the entry and its username. Failures are always notified.         |
 
 A vault record:

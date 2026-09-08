@@ -59,7 +59,7 @@
       "unlockLockoutSec": 30,
       "lockSessionOnLockout": false,
       "lockoutNoLoopback": false,
-      "autofillSubmit": true
+      "autofillSubmit": false
     },
     "schema": [
       {
@@ -118,8 +118,8 @@
         "key": "autofillSubmit",
         "type": "boolean",
         "label": "Autofill presses Enter at the end",
-        "description": "Alt+Enter types the username, Tab, the password and then Enter. Off, it stops before Enter so you can look first.",
-        "defaultValue": true
+        "description": "Alt+Enter types the username, Tab and the password into the window the card was opened from. On, it presses Enter too; off (the default) it stops after the password so you can look first.",
+        "defaultValue": false
       },
       {
         "key": "notifyOnCopy",
