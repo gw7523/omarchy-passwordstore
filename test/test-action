@@ -38,6 +38,8 @@ case $1 in
       site/bob) printf 'p4ss w0rd!\nusername: bob\ncreated: 2026-01-02T03:04:05+00:00\nmodified: 2026-02-03T04:05:06+00:00\nurl: https://example.com\notpauth://totp/x?secret=ABC\n\nfirst note line\nsecond\n' ;;
       crlf/one) printf 'p4ss\r\nusername: carol\r\n\r\nhello\r\n' ;;
       ctl/one) printf 'bad\tpass\nusername: dan\n' ;;
+      ctlname/one) printf 'goodpass\nusername: d\x1ban\n' ;;
+      urls/crlfnotes) printf 'x\r\nusername: e\r\n\r\nurl: https://evil.example\r\n' ;;
       urls/notes) printf 'x\nusername: e\n\nurl: https://evil.example\n' ;;
       urls/upper) printf 'x\nURL: HTTPS://Example.com/$(id)\n' ;;
       urls/js) printf 'x\nurl: javascript:alert(1)\n' ;;
@@ -84,7 +86,7 @@ failed=0
 ok()  { printf '  ok    %s\n' "$1"; passed=$(( passed + 1 )); }
 bad() { printf '  FAIL  %s\n' "$1"; failed=$(( failed + 1 )); }
 reset() {
-  rm -f "$work"/{pass.calls,clipboard,cleared,typed,notify.calls,recent,wlcopy.calls,inserted,xdg-open.calls,hyprctl.calls}
+  rm -f "$work"/{pass.calls,clipboard,cleared,typed,notify.calls,recent,wlcopy.calls,inserted,xdg-open.calls,hyprctl.calls,aw.count,active.later,locked,layers,active}
   # Omarchy's clipboard history, as if an older wl-copy had let the password in.
   printf '[{"type":"text","text":"keep me"},{"type":"text","text":"hunter2"},{"type":"image","path":"/tmp/x.png"}]\n' \
     > "$work/state/omarchy/clipboard-history.json"
@@ -186,9 +188,15 @@ reset
 # $WORK/active says otherwise; dispatches are recorded.
 cat > "$work/bin/hyprctl" <<'SHIM'
 #!/bin/bash
+# $WORK/active: the focused window; $WORK/active.later: what it becomes after
+# the first activewindow query (a switch during typing); $WORK/locked: session lock.
 case $1 in
   layers) cat "$WORK/layers" 2>/dev/null || printf 'namespace: omarchy-bar\n' ;;
-  activewindow) printf '{"address":"%s","class":"chromium","title":"Sign in"}\n' "$(cat "$WORK/active" 2>/dev/null || echo 0xabc)" ;;
+  locked) [[ -e $WORK/locked ]] && echo true || echo false ;;
+  activewindow)
+    n=$(cat "$WORK/aw.count" 2>/dev/null || echo 0); echo $((n + 1)) > "$WORK/aw.count"
+    a=$(cat "$WORK/active" 2>/dev/null || echo 0xabc); [[ $n -ge 2 && -e $WORK/active.later ]] && a=$(cat "$WORK/active.later")
+    printf '{"address":"%s","class":"chromium","title":"Sign in"}\n' "$a" ;;
   dispatch) printf '%s\n' "$*" >> "$WORK/hyprctl.calls" ;;
 esac
 SHIM
@@ -204,13 +212,25 @@ reset
   || bad "autofill without --submit leaves the Enter out (the default)"
 reset; echo 0xdef > "$work/active"
 "$ACTION" autofill web/site --window 0xabc --quiet >/dev/null 2>&1
-[[ $? -eq 1 && ! -e $work/typed ]] && grep -q 'is gone' "$work/notify.calls" && ok "autofill types nothing when the window it was opened from is gone" \
-  || bad "autofill types nothing when the window it was opened from is gone"
-rm -f "$work/active"
-reset; printf 'namespace: omarchy-bar\nnamespace: omarchy-lock\n' > "$work/layers"
+[[ $? -eq 1 && ! -e $work/typed ]] && grep -q 'moved to another window' "$work/notify.calls" && ! grep -q focuswindow "$work/hyprctl.calls" \
+  && ok "autofill types nothing, and steals no focus, when the user moved to another window" \
+  || bad "autofill types nothing, and steals no focus, when the user moved to another window"
+reset; : > "$work/active"; echo 0xdef > "$work/active.later"
 "$ACTION" autofill web/site --window 0xabc --quiet >/dev/null 2>&1
-[[ $? -eq 1 && ! -e $work/typed ]] && ok "autofill types nothing while a lock layer is up" || bad "autofill types nothing while a lock layer is up"
-rm -f "$work/layers"
+[[ $? -eq 1 && ! -e $work/typed ]] && ok "autofill types nothing when the window is gone right after the refocus" \
+  || bad "autofill types nothing when the window is gone right after the refocus"
+reset; touch "$work/locked"
+"$ACTION" autofill web/site --window 0xabc --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/typed ]] && ok "autofill types nothing while the session is locked (hyprctl locked)" || bad "autofill types nothing while the session is locked (hyprctl locked)"
+reset; printf 'namespace: omarchy-bar\nnamespace: omarchy-pinentry\n' > "$work/layers"
+"$ACTION" autofill web/site --window 0xabc --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/typed ]] && ok "autofill types nothing while a prompt layer (omarchy-pinentry) is up" || bad "autofill types nothing while a prompt layer (omarchy-pinentry) is up"
+reset; printf 'namespace: omarchy-bar\nnamespace: omarchy-lock-preview\n' > "$work/layers"
+"$ACTION" autofill web/site --window 0xabc --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/typed ]] && ok "autofill types nothing behind the lock preview" || bad "autofill types nothing behind the lock preview"
+reset
+"$ACTION" autofill ctlname/one --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/typed ]] && ok "autofill refuses a username with control characters" || bad "autofill refuses a username with control characters"
 reset
 "$ACTION" autofill crlf/one --quiet >/dev/null 2>&1
 [[ $(cat "$work/typed" 2>/dev/null) == "carol<Tab>p4ss" ]] && ok "autofill strips CR from a CRLF entry" || bad "autofill strips CR from a CRLF entry ($(cat "$work/typed" 2>/dev/null))"
@@ -226,6 +246,9 @@ reset
 reset
 "$ACTION" open-url urls/notes --quiet >/dev/null 2>&1
 [[ $? -eq 1 && ! -e $work/xdg-open.calls ]] && ok "open-url ignores a url: in the notes" || bad "open-url ignores a url: in the notes"
+reset
+"$ACTION" open-url urls/crlfnotes --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/xdg-open.calls ]] && ok "open-url ignores a url: in the notes of a CRLF entry" || bad "open-url ignores a url: in the notes of a CRLF entry"
 reset
 "$ACTION" open-url urls/upper --quiet >/dev/null 2>&1
 [[ $(cat "$work/xdg-open.calls" 2>/dev/null) == 'HTTPS://Example.com/$(id)' ]] && ok "open-url takes an upper-case scheme and hands metacharacters to xdg-open as one argument" \

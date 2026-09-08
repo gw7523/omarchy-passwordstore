@@ -272,6 +272,7 @@ Item {
   }
 
   function switchVault(delta) {
+    disarmPreselect()
     if (vaults.length < 2) return
     var at = 0
     for (var i = 0; i < vaults.length; i++) if (vaults[i].id === activeVaultId) at = i
@@ -379,12 +380,14 @@ Item {
   property bool autofillAsked: false    // Alt+Enter on a window-picked row asks once
   // Only a browser's title says which site is open; a terminal's title
   // holding "github.com" (a path, a git log) must not pick an entry.
-  readonly property var browserClasses: ["chromium", "chrome", "google-chrome", "brave", "firefox", "librewolf", "zen", "vivaldi", "epiphany", "microsoft-edge", "org.mozilla.firefox", "floorp", "waterfox"]
+  // Exact app ids, plus the -browser/-stable/-esr/-bin suffixes packaging
+  // adds; a prefix match would take zenity for zen.
+  readonly property var browserClasses: ["chromium", "chrome", "google-chrome", "brave", "brave-browser", "firefox", "librewolf", "zen", "vivaldi", "vivaldi-stable", "epiphany", "microsoft-edge", "org.mozilla.firefox", "org.chromium.chromium", "org.gnome.epiphany", "floorp", "waterfox", "helium"]
   readonly property bool windowIsBrowser: {
-    var c = windowClass.toLowerCase()
-    for (var i = 0; i < browserClasses.length; i++) if (c === browserClasses[i] || c.indexOf(browserClasses[i]) === 0) return true
-    return false
+    var c = windowClass.toLowerCase().replace(/-(browser|stable|esr|bin|beta|nightly)$/, "")
+    return browserClasses.indexOf(c) >= 0
   }
+  property bool preselectDone: false    // once per open: later listings do not re-pick
   Process {
     id: windowProcess
     running: false
@@ -407,8 +410,10 @@ Item {
   // key the user presses on the list disarms it.
   readonly property string windowTitleBare: windowTitle.replace(/\s*[-–—·|]\s*(Mozilla Firefox|Firefox|Chromium|Google Chrome|Brave|Vivaldi|Zen Browser|LibreWolf|Microsoft Edge)\s*$/i, "")
   function preselectByWindow() {
-    if (!preselectArmed || menuOpen || filterText !== "" || mode !== "search" || rows.length === 0) return
+    if (preselectDone || !preselectArmed || menuOpen || filterText !== "" || mode !== "search" || rows.length === 0) return
+    if (windowAddress === "" && windowClass === "" && windowTitle === "") return   // the window is not known yet
     if (!windowIsBrowser) return
+    preselectDone = true
     var hay = " " + windowTitleBare.toLowerCase().replace(/[^a-z0-9.]+/g, " ") + " "
     if (hay.trim() === "") return
     var best = -1, bestLen = 0
@@ -419,7 +424,6 @@ Item {
       else if (stem.length >= 4 && stem !== title && hay.indexOf(" " + stem + " ") >= 0 && stem.length > bestLen) { best = i; bestLen = stem.length }
     }
     windowMatched = best >= 0
-    autofillAsked = false
     if (best >= 0) { cursorActive = true; selectedIndex = best; resultList.positionViewAtIndex(best, ListView.Contain) }
   }
   function disarmPreselect() { preselectArmed = false; windowMatched = false; autofillAsked = false }
@@ -434,6 +438,7 @@ Item {
     root.windowMatched = false
     root.windowAddress = ""
     root.preselectArmed = true
+    root.preselectDone = false
     root.autofillAsked = false
     root.opened = true
     windowProcess.running = true
@@ -723,7 +728,7 @@ Item {
     var out = [{ label: "Copy password", keys: "Enter", action: "copy-password" },
                { label: "Copy username", keys: "Alt+U", action: "copy-username" }]
     if (otpAvailable) out.push({ label: "Copy OTP code", keys: "Alt+O", action: "copy-otp" })
-    if (allowTyping) out.push({ label: "Autofill username, password, Enter", keys: "Alt+Enter", action: "autofill" },
+    if (allowTyping) out.push({ label: autofillSubmit ? "Autofill username, Tab, password, Enter" : "Autofill username, Tab, password", keys: "Alt+Enter", action: "autofill" },
                               { label: "Type password", keys: "Ctrl+Enter", action: "type-password" })
     out.push({ label: "Open URL", keys: "Alt+L", action: "open-url" },
              { label: "Share over LocalSend", keys: "Alt+S", action: "share" },
@@ -2434,6 +2439,7 @@ Item {
                 acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
                 onContainsMouseChanged: if (containsMouse) {
                   root.cursorActive = true
+                  if (root.selectedIndex !== row.index) root.disarmPreselect()
                   root.selectedIndex = row.index
                 }
                 onClicked: function(mouse) {
