@@ -1637,7 +1637,10 @@ Item {
   function setupKey(event) {
     var alt = event.modifiers & Qt.AltModifier
     var ctrl = event.modifiers & Qt.ControlModifier
-    var inField = panel.activeFocusItem !== null && panel.activeFocusItem !== keyCatcher
+    // Only a text input counts as "in a field": a Toggle or a button that
+    // happens to hold focus must not swallow the page's letter keys.
+    var focusItem = panel.activeFocusItem
+    var inField = focusItem !== null && focusItem !== keyCatcher && focusItem.cursorPosition !== undefined
     if (event.key === Qt.Key_Escape) { setupCancel(); return true }
     if (event.key === Qt.Key_Left && alt) { setupBack(); return true }
     if (event.key === Qt.Key_Right && alt) { setupPrimary(); return true }
