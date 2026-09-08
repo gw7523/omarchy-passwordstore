@@ -1190,10 +1190,11 @@ Item {
         gpgKeys = Array.isArray(parsed.keys) ? parsed.keys : []
         if (op === "gpg-import") {
           var kind = String(parsed.kind || (parsed.importedSecret ? "secret" : "public"))
-          if (kind === "secret")
+          if (kind === "secret") {
             setupNote = "Imported a private (secret) key. This seat can decrypt entries encrypted for it."
               + (parsed.deleted ? " The file was shredded." : (importDeleteFile ? " The file could not be deleted; remove it yourself." : ""))
-          else if (addingSeat) {
+            if (addingSeat) { clearSeat(); setupError = "A seat sends its public key, not a private one; the join was dropped" }
+          } else if (addingSeat) {
             // One primary key, or nothing is selected: a file that carries
             // a second key would make that key a recipient too.
             var fprs = Array.isArray(parsed.fingerprints) ? parsed.fingerprints.map(function(f) { return String(f).toUpperCase() }) : []
@@ -1213,6 +1214,8 @@ Item {
           gpgImportKind = ""
           importInspect = {}
           importPathField.text = ""
+          // The field that had focus is gone; M (and the rest) must reach the card.
+          focusSetupPage()
         }
         if (op === "gpg-generate" && parsed.status === 124) setupNote = "Still waiting for gpg? Press F5 to rescan"
         if (op === "gpg-export") {
@@ -1458,6 +1461,7 @@ Item {
 
   // Load a vault (or a fresh one) into the wizard's fields.
   function beginDraft(vault, isNew) {
+    clearSeat()
     draftIsNew = isNew
     draft = vault
     vaultNameField.text = vault.name
@@ -1559,6 +1563,7 @@ Item {
   function setupCancel() {
     if (setupBusy !== "") return
     if (setupStep === 3 && (seatPending || addingSeat)) { clearSeat(); setupNote = ""; if (!gpgImporting) { focusSetupPage(); return } }
+    if (addingSeat) { clearSeat(); setupNote = ""; reencryptOffered = false }
     if (setupStep === 3 && gpgImporting) { gpgImporting = false; gpgImportKind = ""; importInspect = {}; focusSetupPage(); return }
     if (setupStep === 3 && gpgExporting) { gpgExporting = false; gpgExportKind = ""; focusSetupPage(); return }
     if (syncConfirm !== "") { syncConfirm = ""; return }
@@ -1645,7 +1650,7 @@ Item {
     var busy = gpgImportKind === "public"
       ? "Importing a public key…"
       : "Importing a private key… (pinentry may ask for its passphrase)"
-    runSetup("gpg-import", ["--file", path].concat(gpgImportKind === "secret" && importDeleteFile ? ["--delete"] : []), busy, draft)
+    runSetup("gpg-import", ["--file", path].concat(gpgImportKind === "secret" && importDeleteFile ? ["--delete"] : []).concat(addingSeat ? ["--one-key"] : []), busy, draft)
   }
 
   // A seat joining a shared vault: on the new seat, S hands the public key
@@ -1661,6 +1666,8 @@ Item {
   function clearSeat() { addingSeat = false; seatFpr = ""; seatUid = ""; seatPending = false }
   function sendKey() {
     if (!cursorKey) { setupError = "Pick a key first"; return }
+    if (!cursorKey.secret) { setupError = "That is someone else's key; a seat sends its own (one with its secret part here)"; return }
+    if (cursorKey.expired || cursorKey.revoked) { setupError = "That key is expired or revoked; a seat sends a key others can encrypt to"; return }
     setupError = ""
     runSetup("gpg-send", ["--gpg-id", String(cursorKey.fpr)], "LocalSend's picker is open in a terminal; the public key goes when you choose the seat…", draft)
   }
@@ -1675,14 +1682,17 @@ Item {
     var picked = []
     for (var i = 0; i < ids.length; i++) {
       var id = String(ids[i])
+      var best = null
       for (var k = 0; k < gpgKeys.length; k++) {
         var key = gpgKeys[k]
-        if (key.fpr === id || key.id === id || (key.fpr && id.length >= 8 && key.fpr.slice(-id.length) === id.toUpperCase())
-            || (key.uid && key.uid.indexOf("<" + id + ">") >= 0)) {
-          if (picked.indexOf(key.fpr) < 0) picked.push(key.fpr)
-          break
-        }
+        var hit = key.fpr === id.toUpperCase() || key.id === id.toUpperCase()
+          || (key.fpr && id.length >= 8 && key.fpr.slice(-id.length) === id.toUpperCase())
+          || (key.uid && String(key.uid).toLowerCase().indexOf("<" + id.toLowerCase() + ">") >= 0)
+        if (!hit || key.expired || key.revoked) continue
+        // An e-mail can name several keys: the one this seat can use wins.
+        if (!best || (key.secret && !best.secret)) best = key
       }
+      if (best && picked.indexOf(best.fpr) < 0) picked.push(best.fpr)
     }
     return picked
   }
@@ -1692,8 +1702,12 @@ Item {
     if (!seatPending || seatFpr === "") return
     var union = selectedGpg.length > 0 ? selectedGpg.slice()
       : matchStoreKeys(status && Array.isArray(status.gpgIds) ? status.gpgIds : [])
-    var have = false
-    for (var i = 0; i < union.length; i++) if (String(union[i]).toUpperCase() === seatFpr) have = true
+    var have = false, secret = false
+    for (var i = 0; i < union.length; i++) {
+      if (String(union[i]).toUpperCase() === seatFpr) have = true
+      for (var k = 0; k < gpgKeys.length; k++) if (gpgKeys[k].fpr === union[i] && gpgKeys[k].secret) secret = true
+    }
+    if (!secret) { setupError = "None of the store's keys has its secret part here, so this seat could not re-encrypt; select your own key first"; return }
     if (!have) union.push(seatFpr)
     selectedGpg = union
     seatPending = false

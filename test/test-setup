@@ -93,6 +93,15 @@ known() { # id, list of fingerprints/emails
 args=("$@")
 last=${args[-1]}
 case " $* " in
+  *" --show-keys "*)
+    # A fixture line names the keys a file "holds"; without one, the whole ring.
+    if grep -q '^ONEKEY-EXPIRED' "$last" 2>/dev/null; then
+      printf 'pub:e:255:22:AAAAAAAAAAAAAAAA:1700000000:::u:::scESC:::::ed25519:::0:\nfpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:\nuid:e::::1700000000::H3::Carol Teammate <carol@example.com>::::::::::0:\n'
+    elif grep -q '^ONEKEY' "$last" 2>/dev/null; then
+      printf 'pub:u:255:22:AAAAAAAAAAAAAAAA:1700000000:::u:::scESC:::::ed25519:::0:\nfpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:\nuid:u::::1700000000::H3::Carol Teammate <carol@example.com>::::::::::0:\nsub:u:255:18:BBBBBBBBBBBBBBBB:1700000000::::::e::::::cv25519::\nfpr:::::::::2222222222222222222222222222222222222222:\n'
+    elif grep -qE 'SECRET|PRIVATE' "$last" 2>/dev/null; then secret_colons
+    else public_colons
+    fi ;;
   *" --with-colons "*)
     case " $* " in
       *" --list-secret-keys "*) secret_colons ;;
@@ -111,10 +120,10 @@ case " $* " in
     else
       echo "gpg: key AAAAAAAAAAAAAAAA: public key \"Carol\" imported" >&2
     fi ;;
-  *" --show-keys "*)
-    if grep -qE 'SECRET|PRIVATE' "$last" 2>/dev/null; then secret_colons
-    else public_colons
-    fi ;;
+  *" -e -o /dev/null "*)
+    # init's dry run: can gpg encrypt to the recipient? Known and not Bob (expired).
+    r=""; for ((i = 0; i < ${#args[@]}; i++)); do [[ ${args[i]} == -r ]] && r=${args[i+1]}; done
+    known "$r" ABCDEF0123456789ABCDEF0123456789ABCDEF01 alice@example.com AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA carol@example.com ;;
   *" --export-secret-keys "*)
     cat <<'EOF'
 -----BEGIN PGP PRIVATE KEY BLOCK-----
@@ -124,6 +133,7 @@ placeholder-secret
 EOF
     ;;
   *" --export "*)
+    known "$last" ABCDEF0123456789ABCDEF0123456789ABCDEF01 FEDCBA9876543210FEDCBA9876543210FEDCBA98 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA || exit 0
     cat <<'EOF'
 -----BEGIN PGP PUBLIC KEY BLOCK-----
 
@@ -377,6 +387,18 @@ check "gpg-import: a secret key file is imported" '.importedSecret == true and .
 out=$("$SETUP" gpg-import --file "$work/public.asc")
 check "gpg-import: a public-only file says so" '.importedSecret == false and .kind == "public"' "$out"
 check "gpg-import: reports the file's primary fingerprints (no subkeys) for the other seat to compare" '(.fingerprints | index("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") != null) and ([.fingerprints[] | select(startswith("1111"))] | length == 0) and (.uid | length) > 0' "$out"
+printf -- '-----BEGIN PGP PUBLIC KEY BLOCK-----\nONEKEY\n-----END PGP PUBLIC KEY BLOCK-----\n' > "$work/carol.asc"
+out=$("$SETUP" gpg-import --file "$work/carol.asc" --one-key)
+check "gpg-import --one-key: a one-key file gives exactly its primary, not the subkey" '.fingerprints == ["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"]' "$out"
+imports_before=$(grep -c -- '--import' "$work/gpg.calls")
+out=$("$SETUP" gpg-import --file "$work/public.asc" --one-key)
+check "gpg-import --one-key: a file with several keys is refused" '.error | test("holds 3 keys")' "$out"
+[[ $(grep -c -- '--import' "$work/gpg.calls") -eq $imports_before ]] && ok "gpg-import --one-key: …before anything is imported" || bad "gpg-import --one-key: …before anything is imported"
+printf -- '-----BEGIN PGP PUBLIC KEY BLOCK-----\nONEKEY-EXPIRED\n-----END PGP PUBLIC KEY BLOCK-----\n' > "$work/expired.asc"
+out=$("$SETUP" gpg-import --file "$work/expired.asc" --one-key)
+check "gpg-import --one-key: an expired key is refused" '.error | test("expired")' "$out"
+out=$("$SETUP" gpg-import --file "$work/secret.asc" --one-key)
+check "gpg-import --one-key: a private key is refused" '.error | test("private")' "$out"
 
 out=$("$SETUP" gpg-inspect --file "$work/secret.asc")
 check "gpg-inspect: private armor is secret" '.kind == "secret" and .exists == true' "$out"
@@ -412,6 +434,10 @@ out=$(LOCALSEND_FAIL=1 "$SETUP" gpg-send --gpg-id ABCDEF0123456789ABCDEF01234567
 check "gpg-send: a picker that did not send is reported" '.ok == false and (.error | test("did not send"))' "$out"
 out=$("$SETUP" gpg-send --gpg-id abcdef0123456789abcdef0123456789abcdef01)
 check "gpg-send: a lower-case fingerprint is accepted and reported upper-case" '.ok == true and .fingerprint == "ABCDEF0123456789ABCDEF0123456789ABCDEF01"' "$out"
+: > "$work/localsend.calls"
+out=$("$SETUP" gpg-send --gpg-id 0000000000000000000000000000000000000000)
+check "gpg-send: a key gpg cannot export is an error, and the picker is not opened" '.ok != true and (.error | test("exported nothing"))' "$out"
+[[ ! -s $work/localsend.calls ]] && ok "gpg-send: …no picker" || bad "gpg-send: …no picker"
 out=$("$SETUP" gpg-send --gpg-id alice@example.com)
 check "gpg-send: needs a full fingerprint" '.error | test("fingerprint")' "$out"
 rm -f "$work/bin/localsend-cli"

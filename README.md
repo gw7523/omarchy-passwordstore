@@ -122,15 +122,20 @@ and syncs on its own, usually through git.
 **Adding a seat** (a second machine of yours, or a teammate's) without a
 file ever leaving the room: on the new seat, Keys page, highlight its key
 and press `S` (`Send key to a seat`); the public key goes to LocalSend's
-device picker. On the seat that holds the vault, `A` (`Add a seat's key`)
-imports the received file (LocalSend saves to `~/Downloads`; the import
-page offers the newest key there) and shows its name and fingerprint.
-Read the fingerprint against the other seat's screen, group by group;
-`M` says they match, and only then is the key selected next to the
-store's own; `Enter` on the Keys page re-encrypts every entry for all of
-them. A git vault pushes right after and says so; the new seat clones or
-pulls it and its key reads everything. A file holding more than one key
-is refused, only public keys travel, and `Esc` at any point drops the
+device picker (LocalSend must be open and accepting on the vault's
+seat). There, `A` (`Add a seat's key`) imports the received file (the
+import page offers the newest key in the downloads folder) and shows its
+name and fingerprint. Read the fingerprint against the other seat's
+screen, group by group; `M` says they match, and only then is the key
+selected next to the store's own and the Store page opened, where
+`Enter` re-encrypts every entry for all of them. That reading is the
+trust decision: the re-encrypt asserts trust in the key (`--trust-model
+always`) instead of asking on a terminal the helper does not have, and
+checks that gpg can encrypt to every recipient before and after. A git
+vault pushes right after and says so; the new seat clones or pulls it
+and its key reads everything. A file holding more than one key, a
+private key, or an expired or revoked key is refused before it is
+imported; only public keys travel; `Esc` anywhere in the wizard drops the
 join.
 
 ### Sync backends
