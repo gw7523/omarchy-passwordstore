@@ -1,0 +1,4 @@
+# The search card with a few entries, then a query.
+shot main
+text git
+shot query

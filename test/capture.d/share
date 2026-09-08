@@ -1,0 +1,9 @@
+# Alt+S, then the one-time passphrase card (decrypts: throwaway key).
+vault key
+text git
+key -M alt -k s -m alt
+shot main
+key -k Return
+pin
+wait 2.5
+shot passphrase

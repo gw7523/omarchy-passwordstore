@@ -1,0 +1,144 @@
+#!/bin/bash
+
+# Capture the card for a PR: the same scene, in the same window at the
+# same theme and scale, on a base branch ("before") and on a feature
+# branch ("after"), over a synthetic vault, cropped to the card, labelled,
+# and joined side by side.
+#
+#   test/capture --scene SCENE --label before|after [--out DIR] [--branch REF]
+#   test/capture --join DIR SCENE           # before + after -> SCENE.png
+#   test/capture --list
+#
+# A scene is a file in test/capture.d/: one step per line (see the files
+# there). Every keystroke is gated on the layer set being exactly the
+# background, the bar and the card (plus what the scene allows), so a
+# menu or a prompt the user opened aborts the run, and it never types
+# into anything but the card. Someone has to be standing by the seat:
+# the card takes the keyboard for a few seconds. With --branch, the live
+# checkout (which the plugin symlink points at) is detached at REF and
+# the shell restarted; the original branch is restored afterwards.
+#
+# The vault is a temporary directory of empty *.gpg files (the search
+# never decrypts) unless the scene says `vault key`, in which case a
+# throwaway key with passphrase "capture" is generated in the keyring and
+# removed afterwards, so scenes that decrypt can answer the prompt.
+
+set -uo pipefail
+
+TEST_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly TEST_DIR
+PLUGIN_DIR="$(dirname -- "$TEST_DIR")"
+readonly PLUGIN_DIR
+readonly SCENES="$TEST_DIR/capture.d"
+readonly PLUGIN_ID="io.github.gw7523.passwordstore"
+readonly SHELL_JSON="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/shell.json"
+readonly OUTPUT="${CAPTURE_OUTPUT:-HDMI-A-1}"
+
+scene="" label="" out="docs/pr" branch="" join="" list=false
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --scene) scene=${2:-}; shift 2 ;;
+    --label) label=${2:-}; shift 2 ;;
+    --out) out=${2:-}; shift 2 ;;
+    --branch) branch=${2:-}; shift 2 ;;
+    --join) join=${2:-}; scene=${3:-}; shift 3 ;;
+    --list) list=true; shift ;;
+    *) echo "capture: unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+if $list; then ls "$SCENES"; exit 0; fi
+
+if [[ -n $join ]]; then
+  [[ -f $join/$scene-before.png && -f $join/$scene-after.png ]] || { echo "capture: need $join/$scene-before.png and -after.png" >&2; exit 1; }
+  magick "$join/$scene-before.png" "$join/$scene-after.png" -bordercolor none -border 12 +append "$join/$scene.png"
+  echo "$join/$scene.png"; exit 0
+fi
+
+[[ -n $scene && -f $SCENES/$scene ]] || { echo "capture: --scene NAME (one of: $(ls "$SCENES" | tr '\n' ' '))" >&2; exit 2; }
+[[ $label == before || $label == after ]] || { echo "capture: --label before|after" >&2; exit 2; }
+for tool in hyprctl wtype grim magick jq; do command -v $tool >/dev/null 2>&1 || { echo "capture: $tool is needed" >&2; exit 1; }; done
+mkdir -p "$out"
+
+# --- the scene file: what it needs and what to press -------------------------
+allow="omarchy-background omarchy-bar omarchy-passwordstore"
+vault_key=false
+while IFS= read -r line; do
+  case $line in
+    "allow "*) allow+=" ${line#allow }" ;;
+    "vault key") vault_key=true ;;
+  esac
+done < "$SCENES/$scene"
+allow=$(tr ' ' '\n' <<<"$allow" | sort -u | tr '\n' ' ')
+
+ns() { hyprctl layers | grep -o 'namespace: [a-z0-9_.-]*' | sed 's/namespace: //' | sort -u | tr '\n' ' '; }
+clean() { [[ $(ns) == "$allow" || $(ns) == "omarchy-background omarchy-bar omarchy-passwordstore " ]] || { echo "capture: ABORT, layers are: $(ns)" >&2; return 1; }; }
+card_up() { hyprctl layers | grep -q 'namespace: omarchy-passwordstore'; }
+
+# --- state to restore, whatever happens ---------------------------------------
+tmp=$(mktemp -d); vault=$(mktemp -d /tmp/capture-vault.XXXX); fpr=""
+cp "$SHELL_JSON" "$tmp/shell.json"
+orig_ref=$(git -C "$PLUGIN_DIR" symbolic-ref -q --short HEAD || git -C "$PLUGIN_DIR" rev-parse HEAD)
+restore() {
+  card_up && omarchy-shell shell hide "$PLUGIN_ID" >/dev/null 2>&1
+  cp "$tmp/shell.json" "$SHELL_JSON"
+  rm -rf "$vault" "$tmp"; rm -f "$HOME/.local/state/omarchy-passwordstore/recent-capture"
+  [[ -n $fpr ]] && gpg --batch --yes --delete-secret-and-public-key "$fpr" >/dev/null 2>&1
+  if [[ -n $branch ]]; then git -C "$PLUGIN_DIR" checkout -q "$orig_ref" 2>/dev/null; omarchy-restart-shell >/dev/null 2>&1; sleep 8; fi
+}
+trap restore EXIT
+
+# --- the synthetic vault ------------------------------------------------------
+if $vault_key; then
+  gpg --batch --pinentry-mode loopback --passphrase capture --quick-generate-key "Capture <capture@example.invalid>" default default 0 >/dev/null 2>&1
+  fpr=$(gpg --with-colons --list-keys capture@example.invalid 2>/dev/null | awk -F: '$1=="fpr"{print $10; exit}')
+  PASSWORD_STORE_DIR=$vault pass init "$fpr" >/dev/null 2>&1
+  for e in "github.com/jack" "amazon.com/jack@example.com" "Bank of Somewhere/jack"; do
+    printf 'Tr0ub4dor&3\nusername: %s\nurl: https://%s\ncreated: 2026-09-01T10:00:00-04:00\nmodified: 2026-09-06T10:00:00-04:00\n\nrecovery: 1234-5678\n' "${e##*/}" "${e%%/*}" \
+      | PASSWORD_STORE_DIR=$vault pass insert -m -f "$e" >/dev/null 2>&1
+  done
+else
+  echo FAKE > "$vault/.gpg-id"
+  for e in "github.com/jack" "amazon.com/jack@example.com" "Bank of Somewhere/jack" "work/vpn/jack.h" "wifi/home" "steam/jack" "netflix.com/family@example.com"; do
+    mkdir -p "$vault/$(dirname "$e")"; : > "$vault/$e.gpg"
+  done
+fi
+mkdir -p "$HOME/.local/state/omarchy-passwordstore"
+printf 'github.com/jack\namazon.com/jack@example.com\n' > "$HOME/.local/state/omarchy-passwordstore/recent-capture"
+jq --arg t "$vault" '(.bar.layout[][] | select(type=="object" and .id=="'"$PLUGIN_ID"'")) |= (.vaults += [{id:"capture",name:"Personal",storeDir:$t}] | .activeVaultId = "capture")' \
+  "$SHELL_JSON" > "$tmp/shell.new" && cp "$tmp/shell.new" "$SHELL_JSON"
+
+if [[ -n $branch ]]; then
+  git -C "$PLUGIN_DIR" checkout -q --detach "$branch" || { echo "capture: cannot check out $branch" >&2; exit 1; }
+  omarchy-restart-shell >/dev/null 2>&1; sleep 9
+else
+  sleep 1.5
+fi
+
+# --- run the scene ------------------------------------------------------------
+shot() { # name
+  local raw="$tmp/$1.png"
+  grim -o "$OUTPUT" "$raw"
+  local file="$out/$scene-$label.png"
+  [[ $1 != main ]] && file="$out/$scene-$1-$label.png"
+  # The layer covers the screen; the card is its centred child, so trim the
+  # scrim: find the non-scrim bounding box by trimming near-uniform borders.
+  magick "$raw" -fuzz 8% -trim +repage -bordercolor none -border 6 \
+    -gravity North -background none -splice 0x28 -fill white -pointsize 18 -annotate +0+4 "${label^^}" "$file"
+  echo "$file"
+}
+omarchy-shell shell toggle "$PLUGIN_ID" '{}' >/dev/null 2>&1; sleep 1.6
+card_up || { echo "capture: the card did not open" >&2; exit 1; }
+while IFS= read -r line; do
+  [[ -z $line || $line == \#* || $line == "allow "* || $line == "vault key" ]] && continue
+  verb=${line%% *}; arg=${line#* }
+  case $verb in
+    key)  clean || exit 1; wtype $arg; sleep 0.5 ;;
+    text) clean || exit 1; wtype "$arg"; sleep 0.5 ;;
+    pin)  for _ in $(seq 1 40); do if [[ $(ns) == *omarchy-pinentry* ]]; then sleep 0.7; wtype capture; sleep 0.3; wtype -k Return; break; fi; sleep 0.25; done ;;
+    wait) sleep "$arg" ;;
+    shot) clean || exit 1; shot "$arg" ;;
+    *) echo "capture: unknown step: $line" >&2; exit 2 ;;
+  esac
+done < "$SCENES/$scene"
+card_up && omarchy-shell shell hide "$PLUGIN_ID" >/dev/null 2>&1

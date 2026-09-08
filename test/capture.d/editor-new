@@ -1,0 +1,9 @@
+# A new entry, with a generated password revealed.
+key -M alt -k n -m alt
+text Example Site
+key -k Tab
+text jack@example.com
+key -M alt -k g -m alt
+wait 1
+key -M alt -k r -m alt
+shot main
