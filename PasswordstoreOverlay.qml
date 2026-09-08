@@ -591,6 +591,7 @@ Item {
   function close() {
     root.opened = false
     root.closeMenu()
+    root.clearSeat()
     if (root.mode === "edit") root.resetEditor()
     if (root.mode === "history") root.leaveHistory()
     // dismiss() reaches here through shell.hide(); a send in flight keeps its file.
@@ -1766,15 +1767,32 @@ Item {
         gpgKeys = Array.isArray(parsed.keys) ? parsed.keys : []
         if (op === "gpg-import") {
           var kind = String(parsed.kind || (parsed.importedSecret ? "secret" : "public"))
-          if (kind === "secret")
+          if (kind === "secret") {
             setupNote = "Imported a private (secret) key. This seat can decrypt entries encrypted for it."
               + (parsed.deleted ? " The file was shredded." : (importDeleteFile ? " The file could not be deleted; remove it yourself." : ""))
-          else
+            if (addingSeat) { clearSeat(); setupError = "A seat sends its public key, not a private one; the join was dropped" }
+          } else if (addingSeat) {
+            // One primary key, or nothing is selected: a file that carries
+            // a second key would make that key a recipient too.
+            var fprs = Array.isArray(parsed.fingerprints) ? parsed.fingerprints.map(function(f) { return String(f).toUpperCase() }) : []
+            if (fprs.length !== 1) {
+              clearSeat()
+              setupError = fprs.length === 0 ? "No key was found in that file" : "That file holds " + fprs.length + " keys; ask the seat to send its own key only"
+            } else {
+              seatFpr = fprs[0]
+              seatUid = String(parsed.uid || "")
+              seatPending = true
+              setupNote = "Imported " + (seatUid !== "" ? seatUid + "  " : "") + fprGroups(seatFpr)
+                + ". Read it against the fingerprint on the other seat's Keys page, group by group. M when they match; Esc if not."
+            }
+          } else
             setupNote = "Imported a public key (recipient). It cannot decrypt here; select it with your private key for a shared vault."
           gpgImporting = false
           gpgImportKind = ""
           importInspect = {}
           importPathField.text = ""
+          // The field that had focus is gone; M (and the rest) must reach the card.
+          focusSetupPage()
         }
         if (op === "gpg-generate" && parsed.status === 124) setupNote = "Still waiting for gpg? Press F5 to rescan"
         if (op === "gpg-export") {
@@ -1786,11 +1804,16 @@ Item {
         }
         preselectStoreKeys()
         break
+      case "gpg-send":
+        if (parsed.ok) setupNote = "The public key " + fprGroups(parsed.fingerprint) + " went to LocalSend. On the seat that holds the vault: Keys page, A, the received file, then read this fingerprint to them."
+        else setupError = String(parsed.error || "The key was not sent")
+        break
       case "gpg-inspect":
         if (parsed.defaults !== undefined) {
           importDefaults = parsed.defaults || {}
           if (gpgImporting && String(importPathField.text).trim() === "") {
-            var suggested = importDefaults[gpgImportKind]
+            // A seat's key came over LocalSend: the newest one in Downloads first.
+            var suggested = (addingSeat && importDefaults.received) ? importDefaults.received : importDefaults[gpgImportKind]
             if (suggested && suggested.path) {
               importPathField.text = suggested.path
               importInspect = suggested
@@ -1808,6 +1831,16 @@ Item {
         } else {
           reencryptOffered = false
           setupNote = parsed.skipped ? "" : "Store created at " + String(parsed.store || storePath)
+          if (addingSeat) {
+            clearSeat()
+            if (parsed.skipped) setupNote = "That key is already a recipient of this store; nothing to re-encrypt."
+            else if (String(draft.syncBackend || "") === "git") {
+              // The re-encrypt is a commit; the new seat can only pull it once it is pushed.
+              seatPushPending = true
+              runSetup("sync-push", ["--quiet", "--backend", "git"], "Pushing the re-encrypted store…", draft)
+              setupNote = "Re-encrypted for the new seat; pushing…"
+            } else setupNote = "Re-encrypted for the new seat. Sync the store to it; its key reads every entry."
+          }
           goToStep(5)
         }
         break
@@ -1824,9 +1857,10 @@ Item {
         refresh()
         break
       case "sync-push":
-        if (parsed.ok) break
+        if (parsed.ok) { if (seatPushPending) setupNote = "Re-encrypted for the new seat and pushed. Clone or pull the vault there, and its key reads every entry."; seatPushPending = false; break }
         if (mode === "history") historyError = "Restored here, but the push failed: " + String(parsed.error || "")
-        else setupError = "Push failed: " + String(parsed.error || "")
+        else { setupError = "Push failed: " + String(parsed.error || ""); if (seatPushPending) setupNote = "Re-encrypted for the new seat, but not pushed; push from the Sync page once the remote answers." }
+        seatPushPending = false
         break
     }
   }
@@ -1847,18 +1881,7 @@ Item {
     if (selectedGpg.length > 0 || gpgKeys.length === 0) return
     var ids = draft && Array.isArray(draft.gpgIds) && draft.gpgIds.length > 0 ? draft.gpgIds
       : (status && Array.isArray(status.gpgIds) ? status.gpgIds : [])
-    var picked = []
-    for (var i = 0; i < ids.length; i++) {
-      var id = String(ids[i])
-      for (var k = 0; k < gpgKeys.length; k++) {
-        var key = gpgKeys[k]
-        if (key.fpr === id || key.id === id || (key.fpr && id.length >= 8 && key.fpr.slice(-id.length) === id.toUpperCase())
-            || (key.uid && key.uid.indexOf("<" + id + ">") >= 0)) {
-          if (picked.indexOf(key.fpr) < 0) picked.push(key.fpr)
-          break
-        }
-      }
-    }
+    var picked = matchStoreKeys(ids)
     if (picked.length > 0) {
       selectedGpg = picked
       for (var g = 0; g < gpgKeys.length; g++) if (gpgKeys[g].fpr === picked[0]) gpgIndex = g
@@ -2034,6 +2057,7 @@ Item {
   // A first run goes straight to the vault page; a configured seat gets the
   // hub. -1 asks for that choice.
   function enterSetup(step) {
+    clearSeat()
     mode = "setup"
     setupError = ""
     setupNote = ""
@@ -2056,12 +2080,14 @@ Item {
   }
 
   function leaveSetup() {
+    clearSeat()
     mode = "search"
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
   // Load a vault (or a fresh one) into the wizard's fields.
   function beginDraft(vault, isNew) {
+    clearSeat()
     draftIsNew = isNew
     draft = vault
     vaultNameField.text = vault.name
@@ -2154,6 +2180,7 @@ Item {
   function setupBack() {
     if (setupBusy !== "") return
     if (setupStep === 6) { goToStep(0); return }
+    if (setupStep === 3 && (seatPending || addingSeat)) { clearSeat(); setupNote = ""; if (!gpgImporting) { focusSetupPage(); return } }
     if (setupStep === 3 && gpgImporting) { gpgImporting = false; gpgImportKind = ""; importInspect = {}; focusSetupPage(); return }
     if (setupStep === 3 && gpgExporting) { gpgExporting = false; gpgExportKind = ""; focusSetupPage(); return }
     if (setupStep === 1) { if (vaultsOnRecord || storeUsable) goToStep(0); return }
@@ -2163,6 +2190,8 @@ Item {
 
   function setupCancel() {
     if (setupBusy !== "") return
+    if (setupStep === 3 && (seatPending || addingSeat)) { clearSeat(); setupNote = ""; if (!gpgImporting) { focusSetupPage(); return } }
+    if (addingSeat) { clearSeat(); setupNote = ""; reencryptOffered = false }
     if (setupStep === 3 && gpgImporting) { gpgImporting = false; gpgImportKind = ""; importInspect = {}; focusSetupPage(); return }
     if (setupStep === 3 && gpgExporting) { gpgExporting = false; gpgExportKind = ""; focusSetupPage(); return }
     if (syncConfirm !== "") { syncConfirm = ""; return }
@@ -2204,8 +2233,8 @@ Item {
         goToStep(4)
         break
       case 4:
-        if (storeExists && !reencryptOffered) goToStep(5)
-        else if (storeExists && reencryptOffered) goToStep(5)
+        if (storeExists && addingSeat) { if (selectedGpg.length > 0) runInit(true) }
+        else if (storeExists) goToStep(5)
         else if (selectedGpg.length > 0) runInit(false)
         break
       case 5:
@@ -2252,9 +2281,72 @@ Item {
     var busy = gpgImportKind === "public"
       ? "Importing a public key…"
       : "Importing a private key… (pinentry may ask for its passphrase)"
-    runSetup("gpg-import", ["--file", path].concat(gpgImportKind === "secret" && importDeleteFile ? ["--delete"] : []), busy, draft)
+    runSetup("gpg-import", ["--file", path].concat(gpgImportKind === "secret" && importDeleteFile ? ["--delete"] : []).concat(addingSeat ? ["--one-key"] : []), busy, draft)
   }
 
+  // A seat joining a shared vault: on the new seat, S hands the public key
+  // of the highlighted key to LocalSend; on the seat that holds the vault,
+  // A imports the received file, shows its fingerprint to compare with the
+  // one on the other screen, and lines up a re-encrypt for both keys.
+  property bool addingSeat: false       // the A flow is under way (import → compare → re-encrypt → push)
+  property string seatFpr: ""           // the one primary key the received file held
+  property string seatUid: ""
+  property bool seatPending: false      // imported, waiting for "the fingerprints match"
+  property bool seatPushPending: false
+  function fprGroups(fpr) { return String(fpr || "").replace(/(.{4})(?=.)/g, "$1 ") }
+  function clearSeat() { addingSeat = false; seatFpr = ""; seatUid = ""; seatPending = false }
+  function sendKey() {
+    if (!cursorKey) { setupError = "Pick a key first"; return }
+    if (!cursorKey.secret) { setupError = "That is someone else's key; a seat sends its own (one with its secret part here)"; return }
+    if (cursorKey.expired || cursorKey.revoked) { setupError = "That key is expired or revoked; a seat sends a key others can encrypt to"; return }
+    setupError = ""
+    runSetup("gpg-send", ["--gpg-id", String(cursorKey.fpr)], "LocalSend's picker is open in a terminal; the public key goes when you choose the seat…", draft)
+  }
+  function beginAddSeat() {
+    clearSeat()
+    addingSeat = true
+    beginImport("public")
+  }
+  // The store's ids as fingerprints of keys in this keyring, matched the
+  // way the Keys page preselects them (full fpr, key id, suffix, e-mail).
+  function matchStoreKeys(ids) {
+    var picked = []
+    for (var i = 0; i < ids.length; i++) {
+      var id = String(ids[i])
+      var best = null
+      for (var k = 0; k < gpgKeys.length; k++) {
+        var key = gpgKeys[k]
+        var hit = key.fpr === id.toUpperCase() || key.id === id.toUpperCase()
+          || (key.fpr && id.length >= 8 && key.fpr.slice(-id.length) === id.toUpperCase())
+          || (key.uid && String(key.uid).toLowerCase().indexOf("<" + id.toLowerCase() + ">") >= 0)
+        if (!hit || key.expired || key.revoked) continue
+        // An e-mail can name several keys: the one this seat can use wins.
+        if (!best || (key.secret && !best.secret)) best = key
+      }
+      if (best && picked.indexOf(best.fpr) < 0) picked.push(best.fpr)
+    }
+    return picked
+  }
+  // M on the Keys page after an add-seat import: the person has read the
+  // fingerprint against the other screen. Only now is the key selected.
+  function seatMatch() {
+    if (!seatPending || seatFpr === "") return
+    var union = selectedGpg.length > 0 ? selectedGpg.slice()
+      : matchStoreKeys(status && Array.isArray(status.gpgIds) ? status.gpgIds : [])
+    var have = false, secret = false
+    for (var i = 0; i < union.length; i++) {
+      if (String(union[i]).toUpperCase() === seatFpr) have = true
+      for (var k = 0; k < gpgKeys.length; k++) if (gpgKeys[k].fpr === union[i] && gpgKeys[k].secret) secret = true
+    }
+    if (!secret) { setupError = "None of the store's keys has its secret part here, so this seat could not re-encrypt; select your own key first"; return }
+    if (!have) union.push(seatFpr)
+    selectedGpg = union
+    seatPending = false
+    setupError = ""
+    setupNote = "Every entry will be re-encrypted for " + (seatUid !== "" ? seatUid : fprGroups(seatFpr)) + " and the store's own keys."
+    reencryptOffered = true
+    goToStep(4)
+  }
   function beginImport(kind) {
     if (!kind) {
       var hasSecret = false
@@ -2456,6 +2548,9 @@ Item {
     if (setupStep === 3 && letter === "u" && !gpgImporting && !gpgExporting) { beginImport("public"); return true }
     if (setupStep === 3 && letter === "p" && !gpgImporting && !gpgExporting) { togglePinentry(); return true }
     if (setupStep === 3 && letter === "e" && !gpgImporting && !gpgExporting) { beginExport("public"); return true }
+    if (setupStep === 3 && letter === "s" && !gpgImporting && !gpgExporting) { sendKey(); return true }
+    if (setupStep === 3 && letter === "a" && !gpgImporting && !gpgExporting) { beginAddSeat(); return true }
+    if (setupStep === 3 && letter === "m" && seatPending) { seatMatch(); return true }
     if (setupStep === 3 && letter === "x" && !gpgImporting && !gpgExporting) { beginExport("secret"); return true }
     // Space toggles the acknowledge / delete switch unless a field has it.
     if (setupStep === 3 && gpgExporting && event.key === Qt.Key_Space && !inField) { exportAcknowledged = !exportAcknowledged; return true }
@@ -2495,7 +2590,7 @@ Item {
       case 3: return gpgImporting
         ? (gpgImportKind === "public" ? "Import public key" : "Import private key")
         : (gpgExporting ? (gpgExportKind === "public" ? "Export public key" : "Export private key") : "Use selected")
-      case 4: return storeExists ? "Next" : "Create store"
+      case 4: return storeExists ? (addingSeat ? "Re-encrypt for the new seat" : "Next") : "Create store"
       case 6: return healthRows.length > 0 ? "Open entry" : "Check again"
       default: return syncConfirm !== "" ? "Yes, upload" : "Apply"
     }
@@ -2515,8 +2610,8 @@ Item {
       case 3: return gpgImporting
         ? "Enter import  ·  Space delete the file afterwards  ·  Esc back to the list"
         : gpgExporting ? (gpgExportKind === "secret" ? "Space acknowledge  ·  Enter export  ·  Esc back" : "Enter export  ·  Esc back")
-        : "↑↓ move  ·  Space select  ·  Enter continue  ·  G generate  ·  I/U import private/public  ·  X/E export private/public  ·  P prompt  ·  F5 rescan"
-      case 4: return reencryptOffered ? "Enter keep the store's keys  ·  R re-encrypt" : "Enter continue"
+        : "↑↓ move  ·  Space select  ·  Enter continue  ·  G generate  ·  I/U import private/public  ·  X/E export private/public  ·  S send to a seat  ·  A add a seat" + (seatPending ? "  ·  M fingerprints match" : "") + "  ·  P prompt  ·  F5 rescan"
+      case 4: return addingSeat ? "Enter re-encrypt every entry for the store's keys and the new seat's  ·  Esc back" : (reencryptOffered ? "Enter keep the store's keys  ·  R re-encrypt" : "Enter continue")
       default: return "1–4 or ↑↓ backend  ·  Tab fields  ·  P pull on open" + (setupBackend === "rclone" ? "  ·  M copy/sync" : "") + "  ·  Enter apply"
     }
   }
@@ -3753,6 +3848,7 @@ Item {
             visible: !root.gpgImporting && !root.gpgExporting
             text: root.gpgKeys.length > 0
               ? "The store is encrypted for every key you select. One must be yours (secret part here); a shared vault adds teammates' public keys, imported first."
+                + "  Another seat joining this vault: there, S sends its public key here over LocalSend; here, A imports it and lines up the re-encrypt."
               : "gpg has no key yet. Generate one (gpg asks for a name, an e-mail and a passphrase in a terminal) or import a backup."
             opacity: 0.7
             bottomPadding: Style.space(6)
@@ -3869,6 +3965,16 @@ Item {
               text: "Rescan"
               width: (parent.width - parent.columnSpacing) / 2
               onClicked: root.runSetup("gpg-list", [], "", root.draft)
+            }
+            CardButton {
+              text: "Send key to a seat"
+              width: (parent.width - parent.columnSpacing) / 2
+              onClicked: root.sendKey()
+            }
+            CardButton {
+              text: "Add a seat's key"
+              width: (parent.width - parent.columnSpacing) / 2
+              onClicked: root.beginAddSeat()
             }
             CardButton {
               text: "Import private key"
