@@ -134,7 +134,9 @@ Item {
   function publishGeometry() {
     if (!writeCardGeometry || !opened) return
     var x = Math.round(card.x), y = Math.round(card.y), w = Math.round(card.width), h = Math.round(card.height)
-    Quickshell.execDetached(["sh", "-c", "mkdir -p \"$1\" && printf '%s\\n' \"$2\" > \"$1/card-geometry\"", "sh", recentDir, w + "x" + h + "+" + x + "+" + y])
+    // WxH+X+Y, then the output the card is on, so a capture crops the right screen.
+    var where = panel.screen ? String(panel.screen.name) : ""
+    Quickshell.execDetached(["sh", "-c", "mkdir -p \"$1\" && printf '%s\\n' \"$2\" > \"$1/card-geometry\"", "sh", recentDir, w + "x" + h + "+" + x + "+" + y + (where !== "" ? " " + where : "")])
   }
   Timer { id: geometryTimer; interval: 120; repeat: false; onTriggered: root.publishGeometry() }
 

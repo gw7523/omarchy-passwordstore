@@ -34,7 +34,7 @@ test/test-action
 test/test-setup
 test/test-pinentry
 omarchy-plugin-validate .
-npx -y shellcheck --severity=warning passwordstore-* test/test-*
+npx -y shellcheck --severity=warning passwordstore-* test/test-* test/capture
 ```
 
 Then the headless instantiation (the scratch harness: `qs -p` on a config
@@ -67,8 +67,11 @@ What it does, so the images are comparable:
   throwaway key whose passphrase the tool knows, for scenes that decrypt),
   fixed names, fixed recent list, and only that vault on the bar entry for
   the run: no real entry, path, backend or vault name is on screen. The
-  tool refuses to send a key until the helper confirms the card is on the
-  synthetic store, and stops at the first failed step.
+  shell is restarted so the overlay (which is `keepLoaded`) reads the new
+  vault list; the helper's check proves the file on disk, and the card is
+  proven by the geometry only this run's overlay writes (the file is
+  removed first). No key is sent before both, and the run stops at the
+  first failed step.
 - The **same window**: the card, cropped to the box it publishes itself
   (`writeCardGeometry`, switched on for the run), so nothing behind it is
   in the image and the size is the card's.
@@ -79,8 +82,11 @@ What it does, so the images are comparable:
 - **Labelled**: each image carries BEFORE or AFTER across its top;
   `--join` puts them side by side.
 - **Safe**: `--branch` detaches the checkout the plugins symlink points
-  at (not the worktree the tool runs from) at the branch and restarts the
-  shell, then puts everything back, on Ctrl+C as well; the tool aborts
+  at (not the worktree the tool runs from) at the branch; the shell is
+  restarted either way, and everything is put back at the end, on Ctrl+C
+  as well (Ctrl+C ends the run; nothing after it is typed). If
+  `shell.json` cannot be written back, the tool says where the original
+  is and keeps it. The tool aborts
   before any keystroke if another layer (a menu, a prompt) is up, and the
   `pin` step only answers a prompt when the card's own pinentry is the sole
   layer up.
@@ -95,9 +101,14 @@ Not capturable this way: the GPG keys page lists the seat's real keyring
 keyring, or describe it in words.
 
 One scene per changed surface: the search card, the row menu, the editor,
-the share card, the setup hub, the GPG page. Add a scene file when a
-feature adds a surface; a scene is five lines. Re-capture after any
-further UI change, and say so in the PR.
+the share card, the setup hub. Add a scene file when a feature adds a
+surface; a scene is five lines, and a `# needs: <text>` line makes the
+tool refuse to run it on a branch whose overlay lacks that text (the row
+menu scene needs `function openMenu`). Re-capture after any further UI
+change, and say so in the PR.
+
+Tools the capture needs on the seat: `omarchy-shell`, `omarchy-restart-shell`,
+`hyprctl`, `wtype`, `grim`, `magick`, `jq`, `gpg`, `pass`.
 
 Someone must be at the seat and not using the keyboard while it runs; the
 tool prints the same guard abort the live tests do.
