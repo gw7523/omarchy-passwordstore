@@ -469,6 +469,43 @@ printf -- '-----BEGIN PGP PUBLIC KEY BLOCK-----\nplaceholder\n' > "$work/pub-kee
 [[ -e $work/pub-keep.asc ]] && ok "gpg-import --delete leaves a public key file alone" || bad "gpg-import --delete leaves a public key file alone" \
   || bad "gpg-import --delete on a symlink unlinks it and leaves the target intact"
 
+# --- health ----------------------------------------------------------------
+
+# A store of five entries; the pass stand-in answers `show` from a fixture
+# directory so the audit can decrypt "them".
+h="$work/health"; mkdir -p "$h/web" "$h/fix"; printf '%s\n' "$ALICE" > "$h/.gpg-id"
+for e in web/a web/b web/short web/old web/fresh; do : > "$h/$e.gpg"; done
+printf 'samepass1234\nmodified: 2026-09-01T00:00:00+00:00\n' > "$h/fix/web-a"
+printf 'samepass1234\nmodified: 2026-09-01T00:00:00+00:00\n' > "$h/fix/web-b"
+printf 'abc\nmodified: 2026-09-01T00:00:00+00:00\n' > "$h/fix/web-short"
+printf 'longenoughpassword\nmodified: 2024-01-01T00:00:00+00:00\n' > "$h/fix/web-old"
+printf 'anotherlongpassword\nmodified: 2026-09-01T00:00:00+00:00\n' > "$h/fix/web-fresh"
+cat > "$work/bin/pass" <<'SHIM'
+#!/bin/bash
+if [[ $1 == show ]]; then f="$PASSWORD_STORE_DIR/fix/${2//\//-}"; [[ -f $f ]] && cat "$f" || exit 1; fi
+SHIM
+chmod +x "$work/bin/pass"
+out=$("$SETUP" audit --store "$h")
+check "audit: counts the entries it read" '.checked == 5 and .hibp == false' "$out"
+check "audit: a password used twice is one reused finding naming both" '[.findings[] | select(.kind == "reused")] | length == 1 and (.[0].entries | sort) == ["web/a", "web/b"]' "$out"
+check "audit: a short password is reported with its length" '[.findings[] | select(.kind == "short")] | length == 1 and .[0].entries == ["web/short"] and (.[0].detail | test("3 characters"))' "$out"
+check "audit: an old modified stamp is reported in days" '[.findings[] | select(.kind == "old")] | length == 1 and .[0].entries == ["web/old"] and (.[0].detail | test("days old"))' "$out"
+check "audit: a fresh, long, unique password is not reported" '[.findings[] | .entries[]] | index("web/fresh") == null' "$out"
+grep -q 'samepass1234\|longenoughpassword' <<<"$out" && bad "audit: no password appears in the output" || ok "audit: no password appears in the output"
+# HIBP by k-anonymity: curl is a stand-in that answers the prefix query with a suffix list.
+sha=$(printf '%s' samepass1234 | sha1sum | awk '{print toupper($1)}')
+cat > "$work/bin/curl" <<SHIM
+#!/bin/bash
+printf '%s\n' "\$*" >> "$work/curl.calls"
+printf '0000000000000000000000000000000000A:1\r\n%s:42\r\n' "${sha:5}"
+SHIM
+chmod +x "$work/bin/curl"
+out=$("$SETUP" audit --store "$h" --hibp)
+check "audit --hibp: a breached password is reported with its count" '[.findings[] | select(.kind == "pwned")] | length == 2 and (.[0].detail | test("42 times"))' "$out"
+grep -q "range/${sha:0:5}" "$work/curl.calls" && ! grep -q "${sha:5}" "$work/curl.calls" && ok "audit --hibp: only the five-character prefix is sent" \
+  || bad "audit --hibp: only the five-character prefix is sent"
+rm -f "$work/bin/curl"
+
 # --- pinentry ---------------------------------------------------------------
 
 export GNUPGHOME="$work/gnupg"; mkdir -p "$GNUPGHOME"

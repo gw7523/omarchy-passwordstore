@@ -97,6 +97,7 @@ opens the same wizard later, starting at the list of vaults.
 | **GPG keys** | The keys gpg knows about, secret ones first. `Space` selects one or more, `G` generates, `I` imports a **private** key, `U` a **public** key. Import names the type and pre-fills `~/secret.asc`, `~/public.asc`, or a matching file in Downloads/Documents if one is there. `P` switches gpg-agent's passphrase prompt to the Omarchy-styled one below. `E` / `X` export the key under the cursor (public / private) to a file, each behind a page that says what the file means; the private one has to be acknowledged, refuses a path inside a git checkout or a synced folder, and the import page offers to shred the file once gpg has it. |
 | **Password store** | `pass init <keys…>` in the vault's directory. A directory that already has a `.gpg-id` is kept as it is; re-encrypting it for other keys is a separate, explicit choice. |
 | **Sync** | One of the four backends below, then its first-time wiring. Applying saves the vault and drops you back into the search on it. |
+| **Health** (`H` on a vault) | Every entry decrypted once, nothing written: passwords used more than once, shorter than twelve characters, older than a year (or without a `modified:` stamp), empty; `Enter` on a finding opens the editor. `B` (or `healthHibp`) adds a Have I Been Pwned check by k-anonymity: only the first five characters of each password's SHA-1 leave the machine. |
 
 `Esc` steps back to the vault list, or closes the card when there is nothing
 usable yet; `Alt+←` / `Alt+→` are Back and Next.
@@ -134,6 +135,17 @@ Push failures notify and never hold up the change itself. A pull that fails
 Anything the card can do, `passwordstore-setup` does from a terminal too:
 `passwordstore-setup sync-push`, `passwordstore-setup status --vault shared`,
 `passwordstore-setup init --store ~/.password-store-shared --gpg-id A --gpg-id B`.
+
+## One-time codes
+
+An entry with an `otpauth://` line ([pass-otp](https://github.com/tadfisher/pass-otp)
+stores it that way) shows its current code in the editor, large, with the
+seconds it has left; `Copy` puts it on the clipboard like `Alt+O` does.
+An entry without one offers `Scan QR`, which hides the card, lets you
+draw a box around the code on screen (`slurp`, `grim`, `zbarimg`) and
+stores what it read, or a field to paste the secret. Both save the entry
+at once; `Remove` drops the line. Needs `pass-otp` for the codes, which
+the Dependencies page installs.
 
 ## Moving a key to another seat
 
@@ -358,7 +370,7 @@ hand:
   `*.gpg` files in the store as JSON. It never decrypts anything.
 - `passwordstore-action <action> <entry> [...]` runs one action: `copy-password`,
   `copy-username`, `copy-otp`, `type-password`, `type-username`, `autofill`,
-  `open-url`, `read`
+  `open-url`, `otp-code`, `otp-scan`, `otp-set`, `otp-remove`, `read`
   (the entry as JSON, for the editor), `save` (JSON on stdin, written with
   `pass insert -m`), `delete` (`pass rm -f`), `generate-password` or `edit`
   (in a terminal). Secrets travel over pipes and stdin, never
@@ -369,7 +381,7 @@ hand:
   `--sync --vault ID` the changes end with a push.
 - `passwordstore-setup <command> [...]` is the wizard's back end: `status`,
   `gpg-list`, `gpg-generate`, `gpg-inspect`, `gpg-import` (`--delete` shreds the file afterwards), `gpg-export` (`--kind public|secret`, `--force`), `install`, `init`, `sync-status`,
-  `sync-setup`, `sync-pull`, `sync-push`, `pinentry`. JSON on stdout, settings read from
+  `sync-setup`, `sync-pull`, `sync-push`, `pinentry`, `audit`. JSON on stdout, settings read from
   the vault's record in `shell.json` when not given as options. Anything that
   may ask for a passphrase or a credential runs in a floating terminal that
   the helper waits on; the card only ever sees status.

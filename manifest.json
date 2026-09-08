@@ -59,7 +59,8 @@
       "unlockLockoutSec": 30,
       "lockSessionOnLockout": false,
       "lockoutNoLoopback": false,
-      "autofillSubmit": false
+      "autofillSubmit": false,
+      "healthHibp": false
     },
     "schema": [
       {
@@ -213,6 +214,13 @@
         "type": "boolean",
         "label": "Refuse loopback pinentry (lockout coverage)",
         "description": "Off by default. On, gpg-agent.conf gets no-allow-loopback-pinentry, so `gpg --pinentry-mode loopback` (which never passes through the prompt and so cannot be counted) is refused; other tools that rely on loopback stop working.",
+        "defaultValue": false
+      },
+      {
+        "key": "healthHibp",
+        "type": "boolean",
+        "label": "Health check asks Have I Been Pwned",
+        "description": "Off by default. On, the vault health check sends the first five characters of each password's SHA-1 to api.pwnedpasswords.com (k-anonymity) and compares the answer here.",
         "defaultValue": false
       }
     ]
