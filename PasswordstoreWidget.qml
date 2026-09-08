@@ -44,7 +44,9 @@ BarWidget {
     }
   }
   Timer { interval: 180000; repeat: true; running: true; triggeredOnStart: true; onTriggered: root.refreshStatus() }
-  onSettingsChanged: refreshStatus()
+  // Settings writes come in clusters (a vault save is two); one refresh after the last.
+  Timer { id: settingsRefresh; interval: 3000; repeat: false; onTriggered: root.refreshStatus() }
+  onSettingsChanged: settingsRefresh.restart()
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight

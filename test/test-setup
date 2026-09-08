@@ -251,9 +251,11 @@ check "sync-push: custom command runs in the store with \$STORE" '.ok == true an
 out=$("$SETUP" sync-push)
 check "sync-push: a failing command reports the error" '.ok == false and (.error | test("nope"))' "$out"
 grep -q "sync failed" "$work/notify.calls" && ok "sync-push: …and notifies" || bad "sync-push: …and notifies"
+mkdir -p "$XDG_STATE_HOME/omarchy-passwordstore"; printf 'offline' > "$XDG_STATE_HOME/omarchy-passwordstore/last-pull-error"
 out=$("$SETUP" sync-pull --vault personal)
 check "sync-pull: custom pull command runs" '.ok == true' "$out"
 [[ -e $s1/pulled ]] && ok "sync-pull: …in the store" || bad "sync-pull: …in the store"
+[[ ! -e $XDG_STATE_HOME/omarchy-passwordstore/last-pull-error ]] && ok "sync-pull: a pull that works ends the failed-pull state" || bad "sync-pull: a pull that works ends the failed-pull state"
 
 # vaults set with `omarchy bar set` and no --json arrive as a string.
 write_shell_json "$(jq -n --arg s1 "$s1" '{activeVaultId: "p",
@@ -494,7 +496,8 @@ check "bar-status: the lockout is flagged" '.locked == true' "$out"
 
 cat > "$work/bin/gpg-connect-agent" <<'SHIM'
 #!/bin/bash
-printf '%s\n' "$*" >> "$WORK/agent.calls"; echo OK
+printf '%s\n' "$*" >> "$WORK/agent.calls"
+case "$1" in CLEAR_PASSPHRASE*) [[ -n ${AGENT_FAILS:-} ]] && { echo "ERR 67108949 Not implemented"; exit 0; }; echo OK ;; *) echo "ERR 67109139 Unknown IPC command"; exit 1 ;; esac
 SHIM
 cat > "$work/bin/wl-copy" <<'SHIM'
 #!/bin/bash
@@ -504,10 +507,21 @@ chmod +x "$work/bin/gpg-connect-agent" "$work/bin/wl-copy"
 mkdir -p "$XDG_RUNTIME_DIR/omarchy-passwordstore/share"; : > "$XDG_RUNTIME_DIR/omarchy-passwordstore/share/left.asc"
 out=$("$SETUP" forget --store "$b" --vault personal)
 check "forget: clears the agent's cache for the store's key and its subkey, by keygrip" '.ok == true and .clearedKeys == 2' "$out"
-grep -q 'CLEAR_PASSPHRASE GRIP1' "$work/agent.calls" && grep -q 'CLEAR_PASSPHRASE GRIP2' "$work/agent.calls" && ! grep -q "$ALICE" "$work/agent.calls" \
-  && ok "forget: CLEAR_PASSPHRASE per keygrip, never the fingerprint" || bad "forget: CLEAR_PASSPHRASE per keygrip, never the fingerprint"
-grep -qx -- '--clear' "$work/wlcopy.calls" && ok "forget: clears the clipboard" || bad "forget: clears the clipboard"
+grep -qx 'CLEAR_PASSPHRASE --mode=normal GRIP1 /bye' "$work/agent.calls" && grep -qx 'CLEAR_PASSPHRASE GRIP1 /bye' "$work/agent.calls" \
+  && grep -qx 'CLEAR_PASSPHRASE --mode=normal GRIP2 /bye' "$work/agent.calls" && ! grep -q "$ALICE" "$work/agent.calls" \
+  && ok "forget: CLEAR_PASSPHRASE in normal mode (the OpenPGP cache) and user mode per keygrip, never the fingerprint" \
+  || bad "forget: CLEAR_PASSPHRASE in normal mode (the OpenPGP cache) and user mode per keygrip, never the fingerprint ($(cat "$work/agent.calls" | tr '\n' '|'))"
+[[ ! -e $work/wlcopy.calls ]] && ok "forget: leaves the clipboard alone when no copy of ours is counting down" || bad "forget: leaves the clipboard alone when no copy of ours is counting down"
 [[ ! -e $XDG_RUNTIME_DIR/omarchy-passwordstore/share/left.asc && $(jq -r .sharesRemoved <<<"$out") == 1 ]] && ok "forget: removes files share left behind" || bad "forget: removes files share left behind"
+( exec -a "passwordstore clip sleep" bash -c 'sleep 20 & wait' ) & sleeper=$!; sleep 0.3
+: > "$XDG_RUNTIME_DIR/omarchy-passwordstore/share/going.asc"; : > "$XDG_RUNTIME_DIR/omarchy-passwordstore/share/going.asc.sending"
+out=$("$SETUP" forget --store "$b" --vault personal)
+kill "$sleeper" 2>/dev/null; wait "$sleeper" 2>/dev/null
+grep -qx -- '--clear' "$work/wlcopy.calls" && [[ $(jq -r .clipboard <<<"$out") == true ]] && ! pgrep -f '^passwordstore clip sleep' >/dev/null \
+  && ok "forget: clears the clipboard while a copy of ours is counting down, and ends the countdown" || bad "forget: clears the clipboard while a copy of ours is counting down, and ends the countdown"
+[[ -e $XDG_RUNTIME_DIR/omarchy-passwordstore/share/going.asc && $(jq -r .sharesRemoved <<<"$out") == 0 ]] && ok "forget: leaves a share the picker is still holding" || bad "forget: leaves a share the picker is still holding"
+out=$(AGENT_FAILS=1 "$SETUP" forget --store "$b" --vault personal)
+check "forget: an agent that refuses is reported, not counted as forgotten" '.ok == false and .clearedKeys == 0 and (.error | test("refused"))' "$out"
 rm -f "$work/bin/gpg-connect-agent" "$work/bin/wl-copy"; unset XDG_RUNTIME_DIR
 
 # --- pinentry ---------------------------------------------------------------

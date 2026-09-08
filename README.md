@@ -229,12 +229,15 @@ minutes and shortly after the card was used; nothing is decrypted for it.
 ## Forgetting
 
 With `idleLockMin` set, going that long without using the card makes the
-seat forget the vault: the vault key's passphrase is cleared from
-gpg-agent by keygrip (other keys stay cached), the clipboard is cleared,
-and any file `share` left under the runtime dir is removed; the next
-copy asks for the passphrase again. `clearOnLock` (on) does the same when
-the session locks and when logind announces sleep. `passwordstore-setup
-forget` is the command behind both.
+seat forget the active vault: the vault key's passphrase is cleared from
+gpg-agent by keygrip (other keys stay cached), the clipboard is cleared
+if a copy of the plugin's (or pass's) is still counting down, and any
+file `share` left under the runtime dir is removed, except one a send is
+holding for LocalSend's picker; the next copy asks for the passphrase
+again. `clearOnLock` (on) does the same for every vault when the session
+locks and when logind announces sleep, and closes the card (an open
+editor is wiped) first. `passwordstore-setup forget` is the command
+behind both; it reports when gpg-agent could not be reached.
 
 ## Keys
 

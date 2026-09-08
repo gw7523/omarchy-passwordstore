@@ -133,27 +133,67 @@ Item {
   // next use asks for the passphrase again.
   readonly property int idleLockMin: intSetting("idleLockMin", 0, 0, 1440)
   readonly property bool clearOnLock: boolSetting("clearOnLock", true)
-  property double lastUse: Date.now()
-  property bool forgotten: false
-  function noteUse() { lastUse = Date.now(); forgotten = false }
-  function forget(reason) {
-    if (forgotten || forgetProcess.running) return
-    forgotten = true
+  property double lastUse: 0            // 0: not used since the shell started (or since an idle forget)
+  function noteUse() { lastUse = Date.now() }
+  // Idle forgets the active vault's; a seat event (lock, sleep) forgets
+  // every vault's, since it is the seat that is being left. The stores are
+  // handed to the helper one at a time.
+  property var forgetQueue: []
+  function forget(reason, everyVault) {
+    var stores = []
+    if (everyVault) {
+      for (var i = 0; i < vaults.length; i++) {
+        var s = String(vaults[i].storeDir || "")
+        if (stores.indexOf(s) < 0) stores.push(s)
+      }
+    }
+    if (stores.length === 0) stores.push(storeDir)
+    // The editor is the one place a secret sits in QML, and the card must
+    // not still be up, revealed, when the seat comes back.
+    if (opened) {
+      if (mode === "edit") resetEditor()
+      if (mode === "share") leaveShare(true)
+      dismiss()
+    }
+    forgetQueue = stores
+    console.log("passwordstore: forgetting cached passphrases:", reason)
+    forgetNext()
+  }
+  function forgetNext() {
+    if (forgetProcess.running || forgetQueue.length === 0) return
+    var s = forgetQueue[0]
+    forgetQueue = forgetQueue.slice(1)
     var command = [setupPath, "forget"]
-    if (storeDir !== "") command.push("--store", storeDir)
+    if (s !== "") command.push("--store", s)
     forgetProcess.command = command
     forgetProcess.running = true
-    console.log("passwordstore: forgot the vault's passphrase and clipboard:", reason)
   }
-  Process { id: forgetProcess; running: false; command: [] }
+  Process {
+    id: forgetProcess
+    running: false
+    command: []
+    stdout: StdioCollector { id: forgetStdout; waitForEnd: true }
+    onExited: function(exitCode) {
+      var parsed = null
+      try { parsed = JSON.parse(String(forgetStdout.text || "")) } catch (e) { parsed = null }
+      if (exitCode !== 0 || !parsed || !parsed.ok) console.log("passwordstore: forget did not clear:", parsed && parsed.error ? parsed.error : "exit " + exitCode)
+      root.forgetNext()
+    }
+  }
   Timer {
     interval: 60000
     repeat: true
-    running: root.idleLockMin > 0
-    onTriggered: if (!root.forgotten && Date.now() - root.lastUse > root.idleLockMin * 60000) root.forget("idle for " + root.idleLockMin + " min")
+    running: root.idleLockMin > 0 && root.lastUse > 0
+    onTriggered: {
+      // An open card is in use. A closed one left idle forgets once, then
+      // waits for the next use before counting again.
+      if (root.opened || Date.now() - root.lastUse <= root.idleLockMin * 60000) return
+      root.lastUse = 0
+      root.forget("idle for " + root.idleLockMin + " min", false)
+    }
   }
   // The session lock is ext-session-lock, not a layer; `hyprctl locked`
-  // says. Polled while the setting is on; a transition to locked forgets.
+  // says. Polled while the setting is on; the transition to locked forgets.
   property bool sessionLocked: false
   Process {
     id: lockedProcess
@@ -161,8 +201,9 @@ Item {
     command: ["hyprctl", "locked"]
     stdout: StdioCollector { id: lockedStdout; waitForEnd: true }
     onExited: function(exitCode) {
-      var now = String(lockedStdout.text || "").trim() === "true"
-      if (now && !root.sessionLocked) root.forget("session locked")
+      var out = String(lockedStdout.text || "").trim().toLowerCase()
+      var now = out === "true" || out === "yes" || out === "1"
+      if (now && !root.sessionLocked) root.forget("session locked", true)
       root.sessionLocked = now
     }
   }
@@ -172,13 +213,16 @@ Item {
     running: root.clearOnLock
     onTriggered: if (!lockedProcess.running) lockedProcess.running = true
   }
-  // logind announces sleep on the system bus; gdbus prints each signal.
+  // logind announces sleep on the system bus; gdbus prints each signal. If
+  // gdbus goes away (missing, bus restarted) it is tried again later.
   Process {
     id: sleepProcess
     running: root.clearOnLock
     command: ["gdbus", "monitor", "--system", "--dest", "org.freedesktop.login1", "--object-path", "/org/freedesktop/login1"]
-    stdout: SplitParser { onRead: function(line) { if (line.indexOf("PrepareForSleep") >= 0 && line.indexOf("true") >= 0) root.forget("sleep") } }
+    stdout: SplitParser { onRead: function(line) { if (/PrepareForSleep \(true/.test(line)) root.forget("sleep", true) } }
+    onExited: function(exitCode) { if (root.clearOnLock) sleepRetry.start() }
   }
+  Timer { id: sleepRetry; interval: 30000; repeat: false; onTriggered: if (root.clearOnLock && !sleepProcess.running) sleepProcess.running = true }
 
   // The lockout pinentry-omarchy reports through status: while it holds,
   // nothing that decrypts is attempted and the legend shows the wait.
@@ -2080,7 +2124,8 @@ Item {
   // Alt+G) are answered before the field sees them, everything else is
   // typed into it.
   component EditField: CardField {
-    Keys.onPressed: function(event) { if (root.editKey(event)) event.accepted = true }
+    Keys.onPressed: function(event) {
+        root.noteUse(); if (root.editKey(event)) event.accepted = true }
   }
 
   PanelWindow {
@@ -2123,6 +2168,7 @@ Item {
       // Wizard keys arrive here after the focused text field, if any, has
       // had its turn; keyCatcher below lets them through in setup mode.
       Keys.onPressed: function(event) {
+        root.noteUse()
         if (root.mode === "setup") { if (root.setupKey(event)) event.accepted = true }
         else if (root.mode === "edit") { if (root.editKey(event)) event.accepted = true }
         else if (root.mode === "share") { if (root.shareKey(event)) event.accepted = true }
@@ -2138,6 +2184,7 @@ Item {
 
         Keys.priority: Keys.BeforeItem
         Keys.onPressed: function(event) {
+        root.noteUse()
           if (root.mode !== "search") return
           var ctrl = event.modifiers & Qt.ControlModifier
           var alt = event.modifiers & Qt.AltModifier
@@ -2616,6 +2663,7 @@ Item {
               background: null
               // Tab is a field hop here, not a character.
               Keys.onPressed: function(event) {
+        root.noteUse()
                 if (event.key === Qt.Key_Tab) { nameField.forceActiveFocus(); event.accepted = true }
                 else if (event.key === Qt.Key_Backtab) { passwordField.forceActiveFocus(); event.accepted = true }
                 else if (root.editKey(event)) event.accepted = true
@@ -2756,7 +2804,8 @@ Item {
           visible: root.sharePassphrase === ""
           placeholderText: "the recipient's key fingerprint, e.g. 9271 4414 6315 8686 7128 …"
           enabled: !root.shareBusy
-          Keys.onPressed: function(event) { if (root.shareKey(event)) event.accepted = true }
+          Keys.onPressed: function(event) {
+        root.noteUse(); if (root.shareKey(event)) event.accepted = true }
         }
 
         SetupText {
