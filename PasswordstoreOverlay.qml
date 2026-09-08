@@ -1520,6 +1520,8 @@ Item {
   // look) or whatever gpg-agent.conf names. Toggled from the GPG page.
   readonly property string pinentryState: status && status.pinentry ? String(status.pinentry) : ""
   function togglePinentry() {
+    // Switching prompts while locked would be the way around the lock.
+    if (locked) { setupError = "Locked for " + formatRemaining(lockoutRemaining) + "; the prompt cannot be changed now"; return }
     runSetup("pinentry", [pinentryState === "omarchy" ? "--disable" : "--enable"], "", draft)
   }
 

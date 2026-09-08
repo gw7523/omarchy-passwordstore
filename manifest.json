@@ -196,7 +196,7 @@
         "key": "lockSessionOnLockout",
         "type": "boolean",
         "label": "Lock the session at the longest lockout",
-        "description": "Off by default. On, reaching the thirty-minute tier also runs omarchy-lock-screen, on the theory that the seat is not in its owner's hands.",
+        "description": "Off by default. On, reaching the thirty-minute tier also runs omarchy-system-lock, on the theory that the seat is not in its owner's hands.",
         "defaultValue": false
       }
     ]

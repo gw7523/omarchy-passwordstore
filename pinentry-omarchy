@@ -17,14 +17,23 @@ Quickshell; it receives the same environment and must write the result JSON
 to the socket.
 
 Lockout: gpg-agent gives a passphrase three tries per request and nothing
-limits the next request, so wrong tries are counted here (every SETERROR
-that reports a bad passphrase, plus what passwordstore-action reports with
---unlock-failed, since the third try of a request is never reported back).
-Too many within the window locks the prompt for an escalating time; GETPIN
-then shows the wait and answers "cancelled". passwordstore-action clears
-the count with --unlock-ok after a decrypt that worked. State lives in
-$XDG_RUNTIME_DIR (never on disk); the policy file next to it is written by
+limits the next request, so wrong tries are counted here: a SETERROR that
+arrives after a GETPIN of the same session is the agent asking again
+(language-independent: the text is translated), plus what
+passwordstore-action reports with --unlock-failed from gpg's status lines,
+since the third try of a request is never reported back. Too many within
+the window locks the prompt for an escalating time; GETPIN then shows the
+wait and answers "cancelled". passwordstore-action clears the count with
+--unlock-ok after a decrypt that worked. State lives in $XDG_RUNTIME_DIR
+(never on disk); the policy file next to it is written by
 passwordstore-setup lockout-policy from the plugin's settings.
+
+This is a seat lock, not a secret: anything running as the same user can
+reset or trip it (the runtime dir is that user's), gpg-agent's passphrase
+cache and --pinentry-mode loopback do not pass through here, and another
+pinentry-program does not count. It slows guessing at the prompt; the
+session lock (policy lockSession) is the backstop for a seat that is not
+in its owner's hands.
 """
 
 import json
@@ -46,6 +55,8 @@ PLUGIN_DIR = os.path.dirname(os.path.realpath(__file__))
 # --- lockout ---------------------------------------------------------------
 
 DEFAULT_POLICY = {"attempts": 5, "windowSec": 600, "lockoutSec": 30, "maxLockoutSec": 1800, "lockSession": False}
+POLICY_BOUNDS = {"attempts": (2, 20), "windowSec": (10, 3600), "lockoutSec": (1, 600), "maxLockoutSec": (10, 3600)}
+LOCK_SESSION_COMMAND = ["omarchy-system-lock"]
 
 
 def runtime_dir():
@@ -114,12 +125,13 @@ def record_failure():
         st["tier"] = tier + 1
         st["failures"] = []
         if p["lockSession"] and seconds >= p["maxLockoutSec"]:
-            # The seat is probably not in its owner's hands.
+            # The seat is probably not in its owner's hands. The compositor
+            # lock takes the login password, not this prompt, so no loop.
             try:
-                subprocess.Popen(["omarchy-lock-screen"], stdin=subprocess.DEVNULL,
+                subprocess.Popen(LOCK_SESSION_COMMAND, stdin=subprocess.DEVNULL,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except OSError:
-                pass
+            except OSError as e:
+                sys.stderr.write("pinentry-omarchy: could not lock the session: %s\n" % e)
     save_lockout(st)
     return lockout_status(now)
 
@@ -204,6 +216,8 @@ class Pinentry:
         self.out = sys.stdout
 
     def reset(self):
+        self.asked = False
+        self.setting_new = False   # SETREPEAT seen: a new passphrase, not a guess
         self.desc = ""
         self.prompt = "Passphrase:"
         self.title = ""
@@ -329,6 +343,7 @@ class Pinentry:
                 self.send("ERR %d Operation cancelled <Pinentry>" % ERR_CANCELLED)
             return
         pin = str(result.get("pin", ""))
+        self.asked = True
         if self.repeat:
             self.send("S PIN_REPEATED")
         self.send("D " + escape(pin))
@@ -383,8 +398,11 @@ class Pinentry:
             self.title = arg; self.send("OK")
         elif cmd == "SETERROR":
             self.error = arg
-            # "Bad Passphrase (try 2 of 3)": the previous try failed.
-            if "bad passphrase" in arg.lower() or "wrong" in arg.lower():
+            # After a GETPIN of this session an error means the agent is
+            # asking again because the answer was wrong ("Bad Passphrase
+            # (try 2 of 3)", in whatever language). A repeat mismatch is
+            # handled inside the card and never reaches here.
+            if self.asked and not self.setting_new:
                 record_failure()
             self.send("OK")
         elif cmd == "SETOK":
@@ -394,7 +412,9 @@ class Pinentry:
         elif cmd == "SETNOTOK":
             self.notok = mnemonic(arg); self.send("OK")
         elif cmd == "SETREPEAT":
-            self.repeat = mnemonic(arg) or "Repeat:"; self.send("OK")
+            self.repeat = mnemonic(arg) or "Repeat:"
+            self.setting_new = True
+            self.send("OK")
         elif cmd == "SETREPEATERROR":
             self.repeat_error = arg; self.send("OK")
         elif cmd == "SETKEYINFO":
@@ -449,7 +469,14 @@ def main():
         p = dict(DEFAULT_POLICY)
         for k in p:
             if k in wanted:
-                p[k] = bool(wanted[k]) if isinstance(p[k], bool) else max(1, int(wanted[k]))
+                if isinstance(p[k], bool):
+                    p[k] = bool(wanted[k])
+                else:
+                    lo, hi = POLICY_BOUNDS[k]
+                    try:
+                        p[k] = min(hi, max(lo, int(wanted[k])))
+                    except (TypeError, ValueError):
+                        pass
         write_json(os.path.join(runtime_dir(), "policy.json"), p)
         print(json.dumps(p))
         return 0

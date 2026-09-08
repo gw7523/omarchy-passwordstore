@@ -167,9 +167,17 @@ up to thirty minutes; a decrypt that works resets everything. While locked
 the card's legend shows the wait, nothing that decrypts is attempted, and
 gpg-agent's own prompt is answered with a message instead of a field. The
 count lives in `$XDG_RUNTIME_DIR`, never on disk. `unlockAttempts`,
-`unlockLockoutSec` and `lockSessionOnLockout` (off: at the longest tier also
-run `omarchy-lock-screen`) are the settings; the card hands them to
-`pinentry-omarchy` every time it opens.
+`unlockLockoutSec` and `lockSessionOnLockout` (off by default; on, the
+longest tier also runs `omarchy-system-lock`) are the settings; the card
+hands them to `pinentry-omarchy` every time it opens.
+
+What this is and is not: a lock on the seat's prompt, not a secret. Anything
+running as you can reset or trip it (the state is yours, in the runtime
+dir), a passphrase gpg-agent has cached needs no prompt, `gpg
+--pinentry-mode loopback` never passes through a pinentry, and switching
+gpg-agent to another pinentry program stops the counting. It slows down
+guessing at the prompt and in the card; the session lock is the backstop
+for a seat that is not in its owner's hands.
 
 ## Keys
 
@@ -261,7 +269,7 @@ string, which both the card and the helper read back as the array.
 | `usernameInPath` | `true`                       | Entries are `name/username` (the list shows both, the editor names new entries that way). `false` keeps pass's classic `folder/entry` layout: the row shows the folder under the entry, and the username lives only inside the file. |
 | `unlockAttempts` | `5`                          | Wrong passphrases within ten minutes before a lockout.                 |
 | `unlockLockoutSec` | `30`                       | The first lockout; each further one is four times longer, up to 30 min. |
-| `lockSessionOnLockout` | `false`                | Also lock the session (`omarchy-lock-screen`) at the longest tier.     |
+| `lockSessionOnLockout` | `false`                | Also lock the session (`omarchy-system-lock`) at the longest tier.     |
 | `allowTyping`    | `true`                       | Enable `Ctrl+Enter` / `Ctrl+Shift+Enter` (needs `wtype`).               |
 | `notifyOnCopy`   | `true`                       | Notify when something was copied, naming the entry and its username. Failures are always notified.         |
 

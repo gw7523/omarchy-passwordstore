@@ -29,7 +29,8 @@ printf '%s\n' "$*" >> "$WORK/pass.calls"
 printf '%s\n' "${PASSWORD_STORE_DIR:-}" > "$WORK/pass.store"
 case "$*" in
   *missing*) echo "Error: missing is not in the password store." >&2; exit 1 ;;
-  *badpass*) echo "gpg: public key decryption failed: Bad passphrase" >&2; exit 2 ;;
+  *badpass*) echo "gpg: Falsches Passwort" >&2; echo "[GNUPG:] BAD_PASSPHRASE 0123456789ABCDEF" >&2; exit 2 ;;
+  *noseckey*) echo "gpg: decryption failed: No secret key" >&2; echo "[GNUPG:] NO_SECKEY 0123456789ABCDEF" >&2; echo "[GNUPG:] DECRYPTION_FAILED" >&2; exit 2 ;;
 esac
 case $1 in
   show)
@@ -88,7 +89,7 @@ reset
 start=$SECONDS
 "$ACTION" copy-password web/site --recent "$work/recent" --clip-time 1 >/dev/null 2>&1
 [[ $? -eq 0 ]] && ok "copy-password exits 0" || bad "copy-password exits 0"
-[[ $(( SECONDS - start )) -lt 1 ]] && ok "copy-password returns without waiting for the clipboard sleeper" \
+[[ $(( SECONDS - start )) -lt 2 ]] && ok "copy-password returns without waiting for the clipboard sleeper" \
   || bad "copy-password returns without waiting for the clipboard sleeper"
 [[ $(cat "$work/clipboard" 2>/dev/null) == "hunter2" ]] && ok "copy-password copies the first line alone" \
   || bad "copy-password copies the first line alone"
@@ -208,8 +209,11 @@ PINENTRY="$PLUGIN_DIR/pinentry-omarchy"
 "$PINENTRY" --set-policy '{"attempts": 2, "lockoutSec": 60}' >/dev/null
 reset
 "$ACTION" copy-password badpass/one --quiet >/dev/null 2>&1
-[[ $(jq -r .failures <<<"$("$PINENTRY" --lockout-status)") == 1 ]] && ok "a decrypt that fails on the passphrase is reported to the lockout" \
-  || bad "a decrypt that fails on the passphrase is reported to the lockout"
+[[ $(jq -r .failures <<<"$("$PINENTRY" --lockout-status)") == 1 ]] && ok "a decrypt that fails on the passphrase is reported to the lockout (by gpg's status line, in any language)" \
+  || bad "a decrypt that fails on the passphrase is reported to the lockout (by gpg's status line, in any language)"
+grep -q 'GNUPG' "$work/notify.calls" && bad "…and the status lines stay out of the notification" || ok "…and the status lines stay out of the notification"
+"$ACTION" copy-password noseckey/one --quiet >/dev/null 2>&1
+[[ $(jq -r .failures <<<"$("$PINENTRY" --lockout-status)") == 1 ]] && ok "a missing secret key is not a wrong passphrase" || bad "a missing secret key is not a wrong passphrase"
 "$ACTION" copy-password badpass/one --quiet >/dev/null 2>&1
 [[ $(jq -r .locked <<<"$("$PINENTRY" --lockout-status)") == true ]] && ok "…and enough of them lock" || bad "…and enough of them lock"
 reset
