@@ -486,9 +486,36 @@ printf 'B-edit\n' > "$sb/web/site.gpg"; git -C "$sb" commit -qam "B edits site"
 out=$("$SETUP" sync-pull --store "$sb" --backend git)
 check "git conflict: the pull succeeds and names the entry" '.ok == true and .conflicts == ["web/site"]' "$out"
 [[ $(cat "$sb/web/site.gpg") == B-edit ]] && ok "git conflict: this seat's version stays the entry" || bad "git conflict: this seat's version stays the entry"
-[[ $(cat "$sb/web/site (conflict from origin).gpg" 2>/dev/null) == A-edit ]] && ok "git conflict: the remote's version is kept beside it" || bad "git conflict: the remote's version is kept beside it"
+copies_arr=("$sb/web/site (conflict from origin, "*.gpg); copy1=${copies_arr[0]##*/}
+[[ -e ${copies_arr[0]} && $(cat "$sb/web/$copy1" 2>/dev/null) == A-edit ]] && ok "git conflict: the remote's version is kept beside it" || bad "git conflict: the remote's version is kept beside it ($(ls "$sb/web"))"
 [[ ! -d $sb/.git/rebase-merge && $(git -C "$sb" status --porcelain | wc -l) -eq 0 ]] && ok "git conflict: the rebase is finished and the tree clean" || bad "git conflict: the rebase is finished and the tree clean"
 grep -q 'changed on both seats' "$work/notify.calls" && ok "git conflict: the user is told" || bad "git conflict: the user is told"
+# A second conflict on the same entry: the first copy is not overwritten.
+git -C "$sb" push -q 2>/dev/null
+git -C "$sa" pull -q --rebase 2>/dev/null; printf 'A-edit-2\n' > "$sa/web/site.gpg"; git -C "$sa" commit -qam "A edits site again"; git -C "$sa" push -q
+printf 'B-edit-2\n' > "$sb/web/site.gpg"; git -C "$sb" commit -qam "B edits site again"
+out=$("$SETUP" sync-pull --store "$sb" --backend git)
+copies_arr=("$sb/web/site (conflict from origin, "*.gpg); copies=${#copies_arr[@]}
+[[ $(jq -r '.ok' <<<"$out") == true && $copies -eq 2 && $(cat "$sb/web/$copy1") == A-edit && $(cat "$sb/web/site.gpg") == B-edit-2 ]] \
+  && ok "git conflict: a second conflict gets its own copy, the first stays" || bad "git conflict: a second conflict gets its own copy, the first stays ($copies copies; $out)"
+# The other seat pulls those copies: it is told, and nothing is a conflict there.
+git -C "$sb" push -q
+out=$("$SETUP" sync-pull --store "$sa" --backend git)
+check "git conflict: the seat a copy arrives at is told about it" '.ok == true and (.conflicts | length) == 1 and (.conflicts[0] | test("conflict from origin"))' "$out"
+# .gpg-id changed on both: this seat's stays, and no fake entry appears.
+printf '%s\n' "$ALICE" "$BOB" > "$sa/.gpg-id"; git -C "$sa" commit -qam "A adds bob"; git -C "$sa" push -q
+printf '%s\n' "$ALICE" "carol@example.com" > "$sb/.gpg-id"; git -C "$sb" commit -qam "B adds carol"
+out=$("$SETUP" sync-pull --store "$sb" --backend git)
+gid_copies=("$sb/.gpg-id (conflict from origin, "*)
+[[ $(jq -r '.ok' <<<"$out") == true && $(cat "$sb/.gpg-id") == "$ALICE"$'\n'"carol@example.com" && ! -e ${gid_copies[0]} ]] \
+  && ok "git conflict: .gpg-id keeps this seat's version and gains no .gpg copy" || bad "git conflict: .gpg-id keeps this seat's version and gains no .gpg copy ($out)"
+git -C "$sb" push -q; git -C "$sa" pull -q --rebase 2>/dev/null
+# Deleted there, edited here: this seat's stays, and the note says so.
+git -C "$sa" rm -q web/site.gpg; git -C "$sa" commit -qm "A deletes site"; git -C "$sa" push -q
+printf 'B-edit-3\n' > "$sb/web/site.gpg"; git -C "$sb" commit -qam "B edits site a third time"
+out=$("$SETUP" sync-pull --store "$sb" --backend git)
+[[ $(jq -r '.ok' <<<"$out") == true && $(cat "$sb/web/site.gpg") == B-edit-3 && $(jq -r '.conflicts[0]' <<<"$out") == *"deleted on the other seat"* ]] \
+  && ok "git conflict: an entry deleted there and edited here is kept, and the note says why" || bad "git conflict: an entry deleted there and edited here is kept, and the note says why ($out)"
 
 out=$("$SETUP" history --store "$sb" --entry web/site)
 check "history: lists the entry's commits, newest first, with author and subject" '.entry == "web/site" and (.commits | length) >= 3 and (.commits[0].author | length) > 0 and (.commits | map(.subject) | index("base") != null) and (.commits[0].date | test("^20"))' "$out"
@@ -500,6 +527,14 @@ check "restore: reports ok" '.ok == true and .entry == "web/site"' "$out"
 out=$("$SETUP" restore --store "$sb" --entry web/site --sha deadbeef)
 check "restore: an unknown version is an error" '.ok != true' "$out"
 "$SETUP" history --store "$sb" --entry ../x >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "history refuses a traversal name" || bad "history refuses a traversal name"
+# Renamed with pass mv: the history follows, and a version from before the
+# rename restores under the new name, into a directory that is gone.
+git -C "$sb" mv web/site.gpg web/moved.gpg; git -C "$sb" commit -qm "B renames site"
+out=$("$SETUP" history --store "$sb" --entry web/moved)
+check "history: follows a rename" '(.commits | map(.subject) | index("base")) != null' "$out"
+rm -rf "$sb/web"; git -C "$sb" commit -qam "B removes web"
+out=$("$SETUP" restore --store "$sb" --entry web/moved --sha "$base_sha")
+[[ $(jq -r .ok <<<"$out") == true && $(cat "$sb/web/moved.gpg" 2>/dev/null) == v0 ]] && ok "restore: a pre-rename version lands under the new name, parent made" || bad "restore: a pre-rename version lands under the new name, parent made ($out)"
 
 # Signed commits: a vault with gitSign gets commit.gpgsign and the store's key as signingkey.
 cp "$XDG_CONFIG_HOME/omarchy/shell.json" "$work/shell.json.keep"
@@ -511,7 +546,15 @@ remote_e="$work/remote-e.git"; git init -q --bare -b main "$remote_e"
   && ok "gitSign: sync-setup turns on signed commits with the store's key" || bad "gitSign: sync-setup turns on signed commits with the store's key"
 write_shell_json '{"vaults": [{"id": "personal", "name": "Personal", "gitSign": false}], "activeVaultId": "personal"}'
 "$SETUP" sync-setup --store "$s5" --vault personal --backend git --git-remote "file://$remote_e" >/dev/null
-[[ -z $(git -C "$s5" config commit.gpgsign) ]] && ok "gitSign off: sync-setup removes it again" || bad "gitSign off: sync-setup removes it again"
+[[ -z $(git -C "$s5" config commit.gpgsign) && -z $(git -C "$s5" config user.signingkey) ]] && ok "gitSign off: sync-setup removes it again" || bad "gitSign off: sync-setup removes it again"
+# A shared vault whose first id is not ours: the signing key is the one with a secret part here.
+write_shell_json '{"vaults": [{"id": "personal", "name": "Personal", "gitSign": true}], "activeVaultId": "personal"}'
+printf '%s\n' "# team" "carol@example.com" "$ALICE" > "$s5/.gpg-id"
+"$SETUP" sync-setup --store "$s5" --vault personal --backend git --git-remote "file://$remote_e" >/dev/null 2>&1
+[[ $(git -C "$s5" config user.signingkey) == "$ALICE" ]] && ok "gitSign: picks the id with a secret key here, past comments and others' keys" || bad "gitSign: picks the id with a secret key here, past comments and others' keys ($(git -C "$s5" config user.signingkey))"
+printf '%s\n' "carol@example.com" > "$s5/.gpg-id"
+"$SETUP" sync-setup --store "$s5" --vault personal --backend git --git-remote "file://$remote_e" >/dev/null 2>&1
+[[ -z $(git -C "$s5" config commit.gpgsign) ]] && ok "gitSign: no signable key means no gpgsign" || bad "gitSign: no signable key means no gpgsign"
 cp "$work/shell.json.keep" "$XDG_CONFIG_HOME/omarchy/shell.json"
 
 # --- pinentry ---------------------------------------------------------------

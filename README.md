@@ -208,8 +208,11 @@ count as nothing.
 
 When a pull finds that both seats changed the same entry, this seat's
 version stays the entry and the other's is written beside it as
-`<name> (conflict from origin)`, the pull completes, and a notification
-names the entries; the list marks such copies `conflict`. Open both,
+`<name> (conflict from origin, <commit>)`, the pull completes, and a
+notification names the entries; the list marks such copies `conflict`,
+on the seat that made them and on the one they arrive at. A conflict on
+`.gpg-id` keeps this seat's file (the other is in the history), and an
+entry the other seat deleted while this one edited it is kept. Open both,
 keep what you mean, delete the copy. `Alt+H` shows an entry's history
 (`pass git log`); `Enter` twice on a version restores it as a new commit,
 so nothing in the history is rewritten and the restore itself can be

@@ -393,6 +393,7 @@ Item {
   function close() {
     root.opened = false
     if (root.mode === "edit") root.resetEditor()
+    if (root.mode === "history") root.leaveHistory()
     // dismiss() reaches here through shell.hide(); a send in flight keeps its file.
     if (root.mode === "share" && !root.shareSending) root.leaveShare(true)
   }
@@ -453,7 +454,7 @@ Item {
   // shows the folder under it; the username is only inside the file.
   function splitName(name) {
     var slash = name.lastIndexOf("/")
-    var conflict = / \(conflict from [^)]+\)$/.test(name)
+    var conflict = / \(conflict from origin(, [0-9a-f]{7}( #[0-9]+)?)?\)$/.test(name)
     if (usernameInPath) {
       var user = slash >= 0 ? name.slice(slash + 1) : ""
       return { name: name, title: slash >= 0 ? name.slice(0, slash) : name, username: user, subtitle: user, conflict: conflict }
@@ -644,7 +645,7 @@ Item {
   property string historyError: ""
   property string historyBuffer: ""
   function openHistory(entry) {
-    if (!entry || historyProcess.running) return
+    if (!entry || historyProcess.running || restoreProcess.running) return
     if (!activeVault || activeVault.syncBackend !== "git") { syncNote = "History needs the git backend (F2 → Sync)"; return }
     mode = "history"
     historyEntry = String(entry.name)
@@ -688,10 +689,16 @@ Item {
     if (historyConfirm !== sha) { historyConfirm = sha; return }
     historyConfirm = ""
     historyBusy = true
+    // The commit lands in this vault whatever the card shows by the time
+    // the helper is done: push there, and only redraw if still here.
+    restoreEntry = historyEntry
+    restoreVault = activeVault
     var command = [setupPath, "restore", "--entry", historyEntry, "--sha", sha].concat(vaultArgs(activeVault))
     restoreProcess.command = command
     restoreProcess.running = true
   }
+  property string restoreEntry: ""
+  property var restoreVault: null
   Process {
     id: restoreProcess
     running: false
@@ -701,11 +708,12 @@ Item {
       root.historyBusy = false
       var parsed = null
       try { parsed = JSON.parse(String(restoreStdout.text || "")) } catch (e) { parsed = null }
-      if (exitCode !== 0 || !parsed || !parsed.ok) { root.historyError = String((parsed && parsed.error) || "Could not restore"); return }
+      var stillHere = root.mode === "history" && root.historyEntry === root.restoreEntry
+      if (exitCode !== 0 || !parsed || !parsed.ok) { if (stillHere) root.historyError = String((parsed && parsed.error) || "Could not restore"); return }
       // The restore is a commit: push it like any change, then show the new history.
-      if (root.syncActive) root.runSetup("sync-push", [], "", root.activeVault)
+      if (root.restoreVault && String(root.restoreVault.syncBackend || "") === "git") root.runSetup("sync-push", ["--quiet"], "", root.restoreVault)
       root.refresh()
-      root.openHistory({ name: root.historyEntry })
+      if (stillHere) root.openHistory({ name: root.historyEntry })
     }
   }
   function historyKey(event) {
