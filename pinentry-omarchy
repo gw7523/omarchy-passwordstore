@@ -218,6 +218,9 @@ class Pinentry:
     def reset(self):
         self.asked = False
         self.setting_new = False   # SETREPEAT seen: a new passphrase, not a guess
+        self.errors = 0            # SETERRORs after a GETPIN this session
+        self.answered = 0          # GETPINs answered this session
+        self.errored_since = False # a SETERROR followed the last answer
         self.desc = ""
         self.prompt = "Passphrase:"
         self.title = ""
@@ -344,6 +347,8 @@ class Pinentry:
             return
         pin = str(result.get("pin", ""))
         self.asked = True
+        self.answered += 1
+        self.errored_since = False
         if self.repeat:
             self.send("S PIN_REPEATED")
         self.send("D " + escape(pin))
@@ -368,6 +373,13 @@ class Pinentry:
         cmd = parts[0].upper()
         arg = unescape(parts[1]) if len(parts) > 1 else ""
         if cmd == "BYE":
+            # The agent asks again after a wrong answer and gives up after
+            # the third; a session that ends after an answer with no error
+            # following it, and fewer than two errors, therefore ended on an
+            # accepted passphrase. That covers `pass` in a terminal, which
+            # never reports through passwordstore-action.
+            if self.answered > 0 and not self.errored_since and self.errors < 2 and not self.setting_new:
+                record_success()
             self.send("OK closing connection")
             return False
         if cmd == "OPTION":
@@ -404,6 +416,8 @@ class Pinentry:
             # handled inside the card and never reaches here.
             if self.asked and not self.setting_new:
                 record_failure()
+                self.errors += 1
+                self.errored_since = True
             self.send("OK")
         elif cmd == "SETOK":
             self.ok = mnemonic(arg); self.send("OK")

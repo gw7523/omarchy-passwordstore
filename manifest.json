@@ -57,7 +57,8 @@
       "usernameInPath": true,
       "unlockAttempts": 5,
       "unlockLockoutSec": 30,
-      "lockSessionOnLockout": false
+      "lockSessionOnLockout": false,
+      "lockoutNoLoopback": false
     },
     "schema": [
       {
@@ -197,6 +198,13 @@
         "type": "boolean",
         "label": "Lock the session at the longest lockout",
         "description": "Off by default. On, reaching the thirty-minute tier also runs omarchy-system-lock, on the theory that the seat is not in its owner's hands.",
+        "defaultValue": false
+      },
+      {
+        "key": "lockoutNoLoopback",
+        "type": "boolean",
+        "label": "Refuse loopback pinentry (lockout coverage)",
+        "description": "Off by default. On, gpg-agent.conf gets no-allow-loopback-pinentry, so `gpg --pinentry-mode loopback` (which never passes through the prompt and so cannot be counted) is refused; other tools that rely on loopback stop working.",
         "defaultValue": false
       }
     ]

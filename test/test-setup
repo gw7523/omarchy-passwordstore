@@ -500,6 +500,18 @@ jq '(.bar.layout.right[0]) += {unlockAttempts: 3, unlockLockoutSec: 10, lockSess
 out=$("$SETUP" lockout-policy --vault personal)
 check "lockout-policy: takes the entry's settings" '.policy.attempts == 3 and .policy.lockoutSec == 10 and .policy.lockSession == true' "$out"
 [[ $(jq -r .attempts "$XDG_RUNTIME_DIR/pinentry-omarchy/policy.json") == 3 ]] && ok "lockout-policy: pinentry-omarchy has it" || bad "lockout-policy: pinentry-omarchy has it"
+export GNUPGHOME="$work/gnupg2"; mkdir -p "$GNUPGHOME"; printf 'default-cache-ttl 600\n' > "$GNUPGHOME/gpg-agent.conf"
+out=$("$SETUP" lockout-policy --vault personal)
+grep -q 'no-allow-loopback-pinentry' "$GNUPGHOME/gpg-agent.conf" && bad "lockout-policy: loopback is left alone by default" || ok "lockout-policy: loopback is left alone by default"
+jq '(.bar.layout.right[0]) += {lockoutNoLoopback: true}' "$XDG_CONFIG_HOME/omarchy/shell.json" > "$work/sj" && mv "$work/sj" "$XDG_CONFIG_HOME/omarchy/shell.json"
+out=$("$SETUP" lockout-policy --vault personal)
+check "lockout-policy: reports noLoopback" '.policy.noLoopback == true' "$out"
+grep -qx 'no-allow-loopback-pinentry' "$GNUPGHOME/gpg-agent.conf" && grep -qx 'default-cache-ttl 600' "$GNUPGHOME/gpg-agent.conf" \
+  && ok "lockout-policy: writes no-allow-loopback-pinentry and keeps the rest" || bad "lockout-policy: writes no-allow-loopback-pinentry and keeps the rest"
+jq '(.bar.layout.right[0]) += {lockoutNoLoopback: false}' "$XDG_CONFIG_HOME/omarchy/shell.json" > "$work/sj" && mv "$work/sj" "$XDG_CONFIG_HOME/omarchy/shell.json"
+"$SETUP" lockout-policy --vault personal >/dev/null
+grep -q 'no-allow-loopback-pinentry' "$GNUPGHOME/gpg-agent.conf" && bad "lockout-policy: turning it off removes the line" || ok "lockout-policy: turning it off removes the line"
+unset GNUPGHOME
 out=$("$SETUP" status --vault personal)
 check "status: reports the lockout" '.lockout.locked == false and .lockout.attempts == 3' "$out"
 unset XDG_RUNTIME_DIR

@@ -188,11 +188,18 @@ hands them to `pinentry-omarchy` every time it opens.
 
 What this is and is not: a lock on the seat's prompt, not a secret. Anything
 running as you can reset or trip it (the state is yours, in the runtime
-dir), a passphrase gpg-agent has cached needs no prompt, `gpg
---pinentry-mode loopback` never passes through a pinentry, and switching
-gpg-agent to another pinentry program stops the counting. It slows down
-guessing at the prompt and in the card; the session lock is the backstop
-for a seat that is not in its owner's hands.
+dir), a passphrase gpg-agent has cached needs no prompt, and switching
+gpg-agent to another pinentry program stops the counting. `gpg
+--pinentry-mode loopback` never passes through a pinentry either;
+`lockoutNoLoopback` (off) makes gpg-agent refuse it
+(`no-allow-loopback-pinentry`), at the price of any other tool that relies
+on loopback. It slows down guessing at the prompt and in the card; the
+session lock is the backstop for a seat that is not in its owner's hands.
+
+A `pass` run from a terminal counts too: the prompt takes a session that
+ends on an accepted answer (no error after it, fewer than two errors in the
+session) as a success and resets the count, and a session that reached the
+third try as neither.
 
 ## Sharing an entry
 
@@ -300,6 +307,7 @@ string, which both the card and the helper read back as the array.
 | `unlockAttempts` | `5`                          | Wrong passphrases within ten minutes before a lockout.                 |
 | `unlockLockoutSec` | `30`                       | The first lockout; each further one is four times longer, up to 30 min. |
 | `lockSessionOnLockout` | `false`                | Also lock the session (`omarchy-system-lock`) at the longest tier.     |
+| `lockoutNoLoopback` | `false`                   | Make gpg-agent refuse `--pinentry-mode loopback`, which bypasses the prompt and its count. Breaks tools that rely on loopback. |
 | `allowTyping`    | `true`                       | Enable `Ctrl+Enter` / `Ctrl+Shift+Enter` (needs `wtype`).               |
 | `notifyOnCopy`   | `true`                       | Notify when something was copied, naming the entry and its username. Failures are always notified.         |
 

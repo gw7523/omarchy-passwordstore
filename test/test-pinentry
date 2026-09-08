@@ -146,6 +146,22 @@ sleep 2.2
 out=$("$PINENTRY" --unlock-ok)
 [[ $(jq -r .locked <<<"$out") == false && $(jq -r .tier <<<"$out") == 0 ]] && ok "lockout: --unlock-ok clears the lock and the tier" || bad "lockout: --unlock-ok clears the lock and the tier"
 [[ $(stat -c %a "$work/run/pinentry-omarchy/lockout.json") == 600 ]] && ok "lockout: state is private (600)" || bad "lockout: state is private (600)"
+# A terminal `pass` never reports back; a session that ends on an accepted
+# answer is taken as a success.
+"$PINENTRY" --unlock-failed >/dev/null; "$PINENTRY" --unlock-failed >/dev/null
+reset; printf '{"ok": true, "pin": "x"}' > "$work/answer.json"
+talk 'GETPIN\nBYE\n' >/dev/null
+[[ $(jq -r .failures <<<"$("$PINENTRY" --lockout-status)") == 0 ]] && ok "lockout: a session ending on an accepted answer clears the count" \
+  || bad "lockout: a session ending on an accepted answer clears the count"
+"$PINENTRY" --unlock-ok >/dev/null
+talk 'GETPIN\nSETERROR bad (2 of 3)\nGETPIN\nSETERROR bad (3 of 3)\nGETPIN\nBYE\n' >/dev/null
+[[ $(jq -r .failures <<<"$("$PINENTRY" --lockout-status)") == 2 ]] && ok "lockout: a session that reached the third try is not taken as a success" \
+  || bad "lockout: a session that reached the third try is not taken as a success"
+"$PINENTRY" --unlock-ok >/dev/null; "$PINENTRY" --unlock-failed >/dev/null
+talk 'SETREPEAT Repeat:\nGETPIN\nBYE\n' >/dev/null
+[[ $(jq -r .failures <<<"$("$PINENTRY" --lockout-status)") == 1 ]] && ok "lockout: setting a new passphrase is neither a failure nor a success" \
+  || bad "lockout: setting a new passphrase is neither a failure nor a success"
+"$PINENTRY" --unlock-ok >/dev/null
 
 echo
 printf '%d passed, %d failed\n' "$passed" "$failed"
