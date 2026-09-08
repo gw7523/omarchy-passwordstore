@@ -88,7 +88,7 @@ opens the same wizard later, starting at the list of vaults.
 | **Vaults** | The vaults on record. `Enter` edits one, `A` adds one, `D` makes one active, `X` forgets its record (the directory and its entries are left alone; delete them yourself if you mean it). |
 | **Vault** | A name and a directory. Each vault is its own `PASSWORD_STORE_DIR`; the first defaults to `~/.password-store`, a second to `~/.password-store-shared`. |
 | **Dependencies** | `pass` and `gnupg` are required, `git`, `rclone`, `pass-otp`, `wtype` optional. `Space` selects, `Enter` runs `omarchy pkg add` in a floating terminal. |
-| **GPG keys** | The keys gpg knows about, secret ones first. `Space` selects one or more, `G` generates, `I` imports a **private** key, `U` a **public** key. Import names the type and pre-fills `~/secret.asc`, `~/public.asc`, or a matching file in Downloads/Documents if one is there. `P` switches gpg-agent's passphrase prompt to the Omarchy-styled one below. |
+| **GPG keys** | The keys gpg knows about, secret ones first. `Space` selects one or more, `G` generates, `I` imports a **private** key, `U` a **public** key. Import names the type and pre-fills `~/secret.asc`, `~/public.asc`, or a matching file in Downloads/Documents if one is there. `P` switches gpg-agent's passphrase prompt to the Omarchy-styled one below. `E` / `X` export the key under the cursor (public / private) to a file, each behind a page that says what the file means; the private one has to be acknowledged, refuses a path inside a git checkout or a synced folder, and the import page offers to shred the file once gpg has it. |
 | **Password store** | `pass init <keys…>` in the vault's directory. A directory that already has a `.gpg-id` is kept as it is; re-encrypting it for other keys is a separate, explicit choice. |
 | **Sync** | One of the four backends below, then its first-time wiring. Applying saves the vault and drops you back into the search on it. |
 
@@ -128,6 +128,21 @@ Push failures notify and never hold up the change itself. A pull that fails
 Anything the card can do, `passwordstore-setup` does from a terminal too:
 `passwordstore-setup sync-push`, `passwordstore-setup status --vault shared`,
 `passwordstore-setup init --store ~/.password-store-shared --gpg-id A --gpg-id B`.
+
+## Moving a key to another seat
+
+The setup card's GPG page exports keys (`E` public, `X` private) and
+imports them (`U` public, `I` private), each behind a page that spells out
+what the file means. A **public** key is safe to share: it lets others
+encrypt for you. A **private** key plus its passphrase reads every entry
+in every vault encrypted for it, forever: copy it only to media you
+control (a USB stick you keep offline, or straight to the other seat over
+LocalSend or scp), never into a git repository, a cloud folder or a chat;
+import it on the other seat, then delete the file on both (`shred -u`,
+which the import page does for you by default); keep one copy offline as
+the backup. The export refuses a path inside a git checkout or a synced
+folder, and the private export has to be acknowledged before anything is
+written.
 
 ## The passphrase prompt
 
@@ -315,7 +330,7 @@ hand:
   `~/.local/state/omarchy/clipboard-history.json` as a fallback. With
   `--sync --vault ID` the changes end with a push.
 - `passwordstore-setup <command> [...]` is the wizard's back end: `status`,
-  `gpg-list`, `gpg-generate`, `gpg-inspect`, `gpg-import`, `install`, `init`, `sync-status`,
+  `gpg-list`, `gpg-generate`, `gpg-inspect`, `gpg-import` (`--delete` shreds the file afterwards), `gpg-export` (`--kind public|secret`, `--force`), `install`, `init`, `sync-status`,
   `sync-setup`, `sync-pull`, `sync-push`, `pinentry`. JSON on stdout, settings read from
   the vault's record in `shell.json` when not given as options. Anything that
   may ask for a passphrase or a credential runs in a floating terminal that
