@@ -173,6 +173,7 @@ Item {
       syncBackend: backend,
       gitRemote: String(get("gitRemote", "")).trim(),
       gitPullOnOpen: asBool(get("gitPullOnOpen", true), true),
+      gitSign: asBool(get("gitSign", false), false),
       rcloneRemote: String(get("rcloneRemote", "")).trim(),
       rcloneMode: String(get("rcloneMode", "copy")).trim() === "sync" ? "sync" : "copy",
       rclonePullOnOpen: asBool(get("rclonePullOnOpen", true), true),
@@ -249,7 +250,7 @@ Item {
   function vaultRecord(vault) {
     return {
       id: vault.id, name: vault.name, storeDir: vault.storeDir, gpgIds: vault.gpgIds,
-      syncBackend: vault.syncBackend, gitRemote: vault.gitRemote, gitPullOnOpen: vault.gitPullOnOpen,
+      syncBackend: vault.syncBackend, gitRemote: vault.gitRemote, gitPullOnOpen: vault.gitPullOnOpen, gitSign: vault.gitSign,
       rcloneRemote: vault.rcloneRemote, rcloneMode: vault.rcloneMode, rclonePullOnOpen: vault.rclonePullOnOpen,
       syncPushCmd: vault.syncPushCmd, syncPullCmd: vault.syncPullCmd
     }
@@ -361,7 +362,7 @@ Item {
   readonly property int shareCardHeight:
     contentMargin * 2 + shareColumn.implicitHeight
   readonly property int cardHeight: Math.min(
-    mode === "setup" ? setupCardHeight : (mode === "edit" ? editCardHeight : (mode === "share" ? shareCardHeight : searchCardHeight)),
+    mode === "setup" ? setupCardHeight : (mode === "edit" ? editCardHeight : (mode === "share" ? shareCardHeight : (mode === "history" ? historyCardHeight : searchCardHeight))),
     panel.height - Style.gapsOut * 2)
 
   // --- open / close (the shell's overlay contract) ----------------------
@@ -369,6 +370,7 @@ Item {
   function open(payloadJson) {
     if (root.mode === "edit") root.resetEditor()
     if (root.mode === "share") root.leaveShare(true)
+    if (root.mode === "history") root.leaveHistory()
     root.filterText = ""
     root.selectedIndex = 0
     root.cursorActive = true
@@ -451,11 +453,12 @@ Item {
   // shows the folder under it; the username is only inside the file.
   function splitName(name) {
     var slash = name.lastIndexOf("/")
+    var conflict = / \(conflict from [^)]+\)$/.test(name)
     if (usernameInPath) {
       var user = slash >= 0 ? name.slice(slash + 1) : ""
-      return { name: name, title: slash >= 0 ? name.slice(0, slash) : name, username: user, subtitle: user }
+      return { name: name, title: slash >= 0 ? name.slice(0, slash) : name, username: user, subtitle: user, conflict: conflict }
     }
-    return { name: name, title: slash >= 0 ? name.slice(slash + 1) : name, username: "", subtitle: slash >= 0 ? name.slice(0, slash) : "" }
+    return { name: name, title: slash >= 0 ? name.slice(slash + 1) : name, username: "", subtitle: slash >= 0 ? name.slice(0, slash) : "", conflict: conflict }
   }
 
   // The card's rows. Without a filter the recent entries come first, then the
@@ -628,6 +631,93 @@ Item {
     actionProcess.command = command
     actionProcess.running = true
   }
+
+  // --- history --------------------------------------------------------------
+
+  // Alt+H: the entry's commits (pass git); Enter on one restores that
+  // version as a new commit, after a second Enter. Nothing is decrypted.
+  property string historyEntry: ""
+  property var historyCommits: []
+  property int historyIndex: 0
+  property string historyConfirm: ""
+  property bool historyBusy: false
+  property string historyError: ""
+  property string historyBuffer: ""
+  function openHistory(entry) {
+    if (!entry || historyProcess.running) return
+    if (!activeVault || activeVault.syncBackend !== "git") { syncNote = "History needs the git backend (F2 → Sync)"; return }
+    mode = "history"
+    historyEntry = String(entry.name)
+    historyCommits = []
+    historyIndex = 0
+    historyConfirm = ""
+    historyError = ""
+    historyBusy = true
+    historyBuffer = ""
+    var command = [setupPath, "history", "--entry", historyEntry].concat(vaultArgs(activeVault))
+    historyProcess.command = command
+    historyProcess.running = true
+  }
+  function leaveHistory() {
+    mode = "search"
+    historyEntry = ""
+    historyCommits = []
+    historyConfirm = ""
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+  Process {
+    id: historyProcess
+    running: false
+    command: []
+    stdout: SplitParser { splitMarker: ""; onRead: function(data) { root.historyBuffer += data } }
+    stderr: StdioCollector { id: historyStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      var text = root.historyBuffer
+      root.historyBuffer = ""
+      root.historyBusy = false
+      if (root.mode !== "history") return
+      var parsed = null
+      try { parsed = JSON.parse(text) } catch (e) { parsed = null }
+      if (exitCode !== 0 || !parsed || parsed.error) { root.historyError = String((parsed && parsed.error) || historyStderr.text || "").replace(/\s+/g, " ").trim() || "No history"; return }
+      root.historyCommits = Array.isArray(parsed.commits) ? parsed.commits : []
+    }
+  }
+  function restoreSelected() {
+    if (historyIndex < 0 || historyIndex >= historyCommits.length || restoreProcess.running) return
+    var sha = String(historyCommits[historyIndex].sha)
+    if (historyConfirm !== sha) { historyConfirm = sha; return }
+    historyConfirm = ""
+    historyBusy = true
+    var command = [setupPath, "restore", "--entry", historyEntry, "--sha", sha].concat(vaultArgs(activeVault))
+    restoreProcess.command = command
+    restoreProcess.running = true
+  }
+  Process {
+    id: restoreProcess
+    running: false
+    command: []
+    stdout: StdioCollector { id: restoreStdout; waitForEnd: true }
+    onExited: function(exitCode) {
+      root.historyBusy = false
+      var parsed = null
+      try { parsed = JSON.parse(String(restoreStdout.text || "")) } catch (e) { parsed = null }
+      if (exitCode !== 0 || !parsed || !parsed.ok) { root.historyError = String((parsed && parsed.error) || "Could not restore"); return }
+      // The restore is a commit: push it like any change, then show the new history.
+      if (root.syncActive) root.runSetup("sync-push", [], "", root.activeVault)
+      root.refresh()
+      root.openHistory({ name: root.historyEntry })
+    }
+  }
+  function historyKey(event) {
+    var ctrl = event.modifiers & Qt.ControlModifier
+    if (event.key === Qt.Key_Escape) { if (historyConfirm !== "") historyConfirm = ""; else leaveHistory(); return true }
+    if (historyBusy) return false
+    if (event.key === Qt.Key_Down || (ctrl && (event.key === Qt.Key_N || event.key === Qt.Key_J))) { historyIndex = Math.min(historyCommits.length - 1, historyIndex + 1); historyConfirm = ""; return true }
+    if (event.key === Qt.Key_Up || (ctrl && (event.key === Qt.Key_P || event.key === Qt.Key_K))) { historyIndex = Math.max(0, historyIndex - 1); historyConfirm = ""; return true }
+    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) { restoreSelected(); return true }
+    return false
+  }
+  readonly property int historyCardHeight: contentMargin * 2 + historyColumn.implicitHeight
 
   function activateSelected(action) { runAction(action, selectedEntry) }
 
@@ -1339,6 +1429,7 @@ Item {
   property int syncIndex: 0
   property string setupRcloneMode: "copy"
   property bool setupGitPull: true
+  property bool setupGitSign: false
   property bool setupRclonePull: true
   property string syncConfirm: ""
 
@@ -1441,6 +1532,7 @@ Item {
     for (var i = 0; i < backendRows.length; i++) if (backendRows[i].key === setupBackend) syncIndex = i
     setupRcloneMode = vault.rcloneMode
     setupGitPull = vault.gitPullOnOpen
+    setupGitSign = !!vault.gitSign
     setupRclonePull = vault.rclonePullOnOpen
     gitRemoteField.text = vault.gitRemote
     rcloneRemoteField.text = vault.rcloneRemote
@@ -1727,6 +1819,7 @@ Item {
     d.syncBackend = b
     d.gitRemote = gitRemoteField.text.trim()
     d.gitPullOnOpen = setupGitPull
+    d.gitSign = setupGitSign
     d.rcloneRemote = rcloneRemoteField.text.trim()
     d.rcloneMode = setupRcloneMode
     d.rclonePullOnOpen = setupRclonePull
@@ -1825,6 +1918,7 @@ Item {
     if (setupStep === 3 && gpgImporting && event.key === Qt.Key_Space && !inField) { importDeleteFile = !importDeleteFile; return true }
     if (setupStep === 4 && letter === "r") { reencrypt(); return true }
     if (setupStep === 5 && letter === "p") { togglePull(); return true }
+    if (setupStep === 5 && letter === "k" && setupBackend === "git") { setupGitSign = !setupGitSign; return true }
     if (setupStep === 5 && letter === "m" && setupBackend === "rclone") {
       setupRcloneMode = setupRcloneMode === "copy" ? "sync" : "copy"; return true
     }
@@ -1890,6 +1984,7 @@ Item {
     if (otpAvailable) hints.push("Alt+O OTP")
     if (allowTyping) hints.push("Ctrl+Enter type")
     hints.push("Alt+E edit", "Alt+N new", "Alt+S share")
+    if (activeVault.syncBackend === "git") hints.push("Alt+H history")
     if (vaults.length > 1) hints.push("Tab vault")
     hints.push("F2 setup")
     var line = hints.join("  ·  ")
@@ -2072,6 +2167,7 @@ Item {
         if (root.mode === "setup") { if (root.setupKey(event)) event.accepted = true }
         else if (root.mode === "edit") { if (root.editKey(event)) event.accepted = true }
         else if (root.mode === "share") { if (root.shareKey(event)) event.accepted = true }
+        else if (root.mode === "history") { if (root.historyKey(event)) event.accepted = true }
       }
 
       // Type-to-filter, as the menu does: there is no text field to focus,
@@ -2132,6 +2228,8 @@ Item {
             root.activateSelected(shift ? "edit-terminal" : "edit"); event.accepted = true
           } else if (alt && event.key === Qt.Key_S) {
             root.openShare(root.selectedEntry); event.accepted = true
+          } else if (alt && event.key === Qt.Key_H) {
+            root.openHistory(root.selectedEntry); event.accepted = true
           } else if (alt && event.key === Qt.Key_N) {
             root.insertNew("insert"); event.accepted = true
           } else if (alt && event.key === Qt.Key_G) {
@@ -2277,8 +2375,8 @@ Item {
                 anchors.right: parent.right
                 anchors.rightMargin: root.rowReservedBorderRight + Style.space(10)
                 anchors.verticalCenter: parent.verticalCenter
-                text: row.modelData.recent ? root.clockGlyph : ""
-                width: row.modelData.recent ? implicitWidth : 0
+                text: row.modelData.conflict ? "conflict" : (row.modelData.recent ? root.clockGlyph : "")
+                width: text !== "" ? implicitWidth : 0
                 color: row.hasCursor ? root.selectedText : root.foreground
                 opacity: 0.45
                 font.family: root.fontFamily
@@ -2660,6 +2758,74 @@ Item {
               }
             }
           }
+        }
+      }
+
+      // --------------------------------------------------------- history
+
+      Column {
+        id: historyColumn
+        anchors.fill: parent
+        anchors.topMargin: card.contentTopInset
+        anchors.rightMargin: card.contentRightInset
+        anchors.bottomMargin: card.contentBottomInset
+        anchors.leftMargin: card.contentLeftInset
+        spacing: root.rowSpacing
+        visible: root.mode === "history"
+
+        Item {
+          width: parent.width
+          height: root.headerHeight
+          Text {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            text: "History  ·  " + root.historyEntry
+            textFormat: Text.PlainText
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.heading
+            elide: Text.ElideLeft
+          }
+        }
+        SetupText {
+          text: root.historyBusy ? "Reading…" : (root.historyCommits.length === 0 && root.historyError === "" ? "No commits for this entry." : "Every change pass committed, newest first. Enter restores a version as a new commit (nothing is rewritten).")
+          opacity: 0.7
+          bottomPadding: Style.space(4)
+        }
+        Repeater {
+          model: root.historyCommits
+          delegate: ChoiceRow {
+            required property var modelData
+            required property int index
+            hasCursor: root.historyIndex === index
+            lead: root.clockGlyph
+            title: String(modelData.subject || "")
+            subtitle: String(modelData.author || "") + "  ·  " + root.formatStamp(String(modelData.date || ""))
+            trail: root.historyConfirm === String(modelData.sha) ? "Enter again to restore" : String(modelData.sha || "").slice(0, 7)
+            onHoveredRow: root.historyIndex = index
+            onPicked: { root.historyIndex = index; root.restoreSelected() }
+          }
+        }
+        Text {
+          width: parent.width
+          visible: root.historyError !== ""
+          text: root.historyError
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          color: Color.urgent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+        }
+        Text {
+          width: parent.width
+          text: "↑↓ choose  ·  Enter restore (twice)  ·  Esc back"
+          textFormat: Text.PlainText
+          color: root.foreground
+          opacity: 0.45
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          topPadding: Style.space(6)
         }
       }
 
@@ -3142,6 +3308,8 @@ Item {
               visible: root.setupBackend === "git"
               text: "pass git init if needed, then push -u origin; an existing remote with commits is fetched instead. Credentials are git's and ssh's own; the first push runs in a terminal."
                 + "  Pull --rebase on open: " + (root.setupGitPull ? "on" : "off") + " (P)."
+                + "  Signed commits with the vault's key: " + (root.setupGitSign ? "on" : "off") + " (K), so a teammate can verify who pushed what."
+                + "  Two seats editing one entry offline: this seat's version stays, the other's lands beside it as “(conflict from origin)”."
               opacity: 0.7
             }
 

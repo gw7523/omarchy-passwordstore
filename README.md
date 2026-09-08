@@ -204,6 +204,17 @@ count; a session that reached the third try, a cancelled one, and prompts
 the agent hands back unchecked (a symmetric decrypt, `GET_PASSPHRASE`)
 count as nothing.
 
+## Two seats, one entry
+
+When a pull finds that both seats changed the same entry, this seat's
+version stays the entry and the other's is written beside it as
+`<name> (conflict from origin)`, the pull completes, and a notification
+names the entries; the list marks such copies `conflict`. Open both,
+keep what you mean, delete the copy. `Alt+H` shows an entry's history
+(`pass git log`); `Enter` twice on a version restores it as a new commit,
+so nothing in the history is rewritten and the restore itself can be
+restored from.
+
 ## Sharing an entry
 
 `Alt+S` hands one entry to someone nearby over [LocalSend](https://localsend.org/),
@@ -232,6 +243,7 @@ they received.
 | `Alt+E`                  | Edit the entry on the card; `Alt+Shift+E` opens it in a terminal with `pass edit` instead |
 | `Alt+N` / `Alt+G`        | Add an entry on the card (`Alt+G`: with a password already generated); the search text, if any, is the new entry's name |
 | `Alt+S`                  | Share the entry over LocalSend, encrypted (below)        |
+| `Alt+H`                  | The entry's history (git backend): every change, `Enter` twice restores a version as a new commit |
 | `Tab` / `Shift+Tab`      | Next / previous vault                                    |
 | `F2` / `Ctrl+,`          | Setup: vaults, keys, sync                                |
 | `F5`                     | Re-read the store (it is also re-read every time it opens) |
@@ -322,7 +334,7 @@ A vault record:
 | `storeDir` | The store. Empty means `$PASSWORD_STORE_DIR` or `~/.password-store`, as pass does. |
 | `gpgIds` | The recipients `pass init` was run with. Informational; `.gpg-id` in the store is what pass uses. |
 | `syncBackend` | `local`, `git`, `rclone` or `custom`. |
-| `gitRemote`, `gitPullOnOpen` | The origin URL, and whether to `pass git pull --rebase` on open (default `true`). |
+| `gitRemote`, `gitPullOnOpen`, `gitSign` | The origin URL, whether to `pass git pull --rebase` on open (default `true`), and whether commits are signed with the vault's key (`K` on the Sync page, default `false`). |
 | `rcloneRemote`, `rcloneMode`, `rclonePullOnOpen` | `remote:path`, `copy` (default) or `sync`, and whether to copy from the remote on open (default `true`). |
 | `syncPushCmd`, `syncPullCmd` | The custom backend's commands. |
 
@@ -348,7 +360,7 @@ hand:
   `--sync --vault ID` the changes end with a push.
 - `passwordstore-setup <command> [...]` is the wizard's back end: `status`,
   `gpg-list`, `gpg-generate`, `gpg-inspect`, `gpg-import` (`--delete` shreds the file afterwards), `gpg-export` (`--kind public|secret`, `--force`), `install`, `init`, `sync-status`,
-  `sync-setup`, `sync-pull`, `sync-push`, `pinentry`. JSON on stdout, settings read from
+  `sync-setup`, `sync-pull`, `sync-push`, `pinentry`, `history`, `restore`. JSON on stdout, settings read from
   the vault's record in `shell.json` when not given as options. Anything that
   may ask for a passphrase or a credential runs in a floating terminal that
   the helper waits on; the card only ever sees status.

@@ -469,6 +469,51 @@ printf -- '-----BEGIN PGP PUBLIC KEY BLOCK-----\nplaceholder\n' > "$work/pub-kee
 [[ -e $work/pub-keep.asc ]] && ok "gpg-import --delete leaves a public key file alone" || bad "gpg-import --delete leaves a public key file alone" \
   || bad "gpg-import --delete on a symlink unlinks it and leaves the target intact"
 
+# --- git conflicts, history, restore, signing --------------------------------
+
+# Two seats on one remote: A pushes an edit of web/site, B edits the same
+# entry offline and pulls. B keeps its own version and gains a copy of A's.
+remote_d="$work/remote-d.git"; git init -q --bare -b main "$remote_d"
+sa="$work/seatA"; sb="$work/seatB"
+for d in "$sa" "$sb"; do
+  mkdir -p "$d/web"; printf '%s\n' "$ALICE" > "$d/.gpg-id"; printf 'v0\n' > "$d/web/site.gpg"
+done
+git -C "$sa" init -q -b main; git -C "$sa" config user.email a@example.invalid; git -C "$sa" config user.name A
+git -C "$sa" add -A; git -C "$sa" commit -q -m base; git -C "$sa" remote add origin "$remote_d"; git -C "$sa" push -q -u origin main
+rm -rf "$sb"; git clone -q "$remote_d" "$sb"; git -C "$sb" config user.email b@example.invalid; git -C "$sb" config user.name B
+printf 'A-edit\n' > "$sa/web/site.gpg"; git -C "$sa" commit -qam "A edits site"; git -C "$sa" push -q
+printf 'B-edit\n' > "$sb/web/site.gpg"; git -C "$sb" commit -qam "B edits site"
+out=$("$SETUP" sync-pull --store "$sb" --backend git)
+check "git conflict: the pull succeeds and names the entry" '.ok == true and .conflicts == ["web/site"]' "$out"
+[[ $(cat "$sb/web/site.gpg") == B-edit ]] && ok "git conflict: this seat's version stays the entry" || bad "git conflict: this seat's version stays the entry"
+[[ $(cat "$sb/web/site (conflict from origin).gpg" 2>/dev/null) == A-edit ]] && ok "git conflict: the remote's version is kept beside it" || bad "git conflict: the remote's version is kept beside it"
+[[ ! -d $sb/.git/rebase-merge && $(git -C "$sb" status --porcelain | wc -l) -eq 0 ]] && ok "git conflict: the rebase is finished and the tree clean" || bad "git conflict: the rebase is finished and the tree clean"
+grep -q 'changed on both seats' "$work/notify.calls" && ok "git conflict: the user is told" || bad "git conflict: the user is told"
+
+out=$("$SETUP" history --store "$sb" --entry web/site)
+check "history: lists the entry's commits, newest first, with author and subject" '.entry == "web/site" and (.commits | length) >= 3 and (.commits[0].author | length) > 0 and (.commits | map(.subject) | index("base") != null) and (.commits[0].date | test("^20"))' "$out"
+base_sha=$(jq -r '.commits[] | select(.subject == "base") | .sha' <<<"$out")
+out=$("$SETUP" restore --store "$sb" --entry web/site --sha "$base_sha")
+check "restore: reports ok" '.ok == true and .entry == "web/site"' "$out"
+[[ $(cat "$sb/web/site.gpg") == v0 && $(git -C "$sb" log -1 --format=%s) == "Restore web/site from ${base_sha:0:7}." ]] \
+  && ok "restore: the file is back as it was, as a new commit" || bad "restore: the file is back as it was, as a new commit"
+out=$("$SETUP" restore --store "$sb" --entry web/site --sha deadbeef)
+check "restore: an unknown version is an error" '.ok != true' "$out"
+"$SETUP" history --store "$sb" --entry ../x >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "history refuses a traversal name" || bad "history refuses a traversal name"
+
+# Signed commits: a vault with gitSign gets commit.gpgsign and the store's key as signingkey.
+cp "$XDG_CONFIG_HOME/omarchy/shell.json" "$work/shell.json.keep"
+write_shell_json '{"vaults": [{"id": "personal", "name": "Personal", "gitSign": true}], "activeVaultId": "personal"}'
+s5="$work/store5"; mkdir -p "$s5/web"; printf '%s\n' "$ALICE" > "$s5/.gpg-id"; : > "$s5/web/site.gpg"
+remote_e="$work/remote-e.git"; git init -q --bare -b main "$remote_e"
+"$SETUP" sync-setup --store "$s5" --vault personal --backend git --git-remote "file://$remote_e" >/dev/null
+[[ $(git -C "$s5" config commit.gpgsign) == true && $(git -C "$s5" config user.signingkey) == "$ALICE" ]] \
+  && ok "gitSign: sync-setup turns on signed commits with the store's key" || bad "gitSign: sync-setup turns on signed commits with the store's key"
+write_shell_json '{"vaults": [{"id": "personal", "name": "Personal", "gitSign": false}], "activeVaultId": "personal"}'
+"$SETUP" sync-setup --store "$s5" --vault personal --backend git --git-remote "file://$remote_e" >/dev/null
+[[ -z $(git -C "$s5" config commit.gpgsign) ]] && ok "gitSign off: sync-setup removes it again" || bad "gitSign off: sync-setup removes it again"
+cp "$work/shell.json.keep" "$XDG_CONFIG_HOME/omarchy/shell.json"
+
 # --- pinentry ---------------------------------------------------------------
 
 export GNUPGHOME="$work/gnupg"; mkdir -p "$GNUPGHOME"
