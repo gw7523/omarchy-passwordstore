@@ -1,0 +1,4 @@
+# The row menu (Right arrow) on the first entry; feat/autofill and later.
+# needs: function openMenu
+key -k Right
+shot main

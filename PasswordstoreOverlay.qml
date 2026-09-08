@@ -127,6 +127,18 @@ Item {
   // layout where the last segment is the entry and the username lives
   // inside the file.
   readonly property bool usernameInPath: boolSetting("usernameInPath", true)
+  // For test/capture: the card's on-screen box, written to the state dir
+  // whenever it changes, so a screenshot can be cropped to the card
+  // exactly. Off unless the setting says so; nothing secret in it.
+  readonly property bool writeCardGeometry: boolSetting("writeCardGeometry", false)
+  function publishGeometry() {
+    if (!writeCardGeometry || !opened) return
+    var x = Math.round(card.x), y = Math.round(card.y), w = Math.round(card.width), h = Math.round(card.height)
+    // WxH+X+Y, then the output the card is on, so a capture crops the right screen.
+    var where = panel.screen ? String(panel.screen.name) : ""
+    Quickshell.execDetached(["sh", "-c", "mkdir -p \"$1\" && printf '%s\\n' \"$2\" > \"$1/card-geometry\"", "sh", recentDir, w + "x" + h + "+" + x + "+" + y + (where !== "" ? " " + where : "")])
+  }
+  Timer { id: geometryTimer; interval: 120; repeat: false; onTriggered: root.publishGeometry() }
 
   // The lockout pinentry-omarchy reports through status: while it holds,
   // nothing that decrypts is attempted and the legend shows the wait.
@@ -373,6 +385,7 @@ Item {
     root.selectedIndex = 0
     root.cursorActive = true
     root.opened = true
+    geometryTimer.restart()
     root.autoRoute = true
     root.syncNote = ""
     // The store is re-read on every open: a `find` over a few hundred files
@@ -2065,6 +2078,10 @@ Item {
       padding: root.contentMargin
 
       MouseArea { anchors.fill: parent; onClicked: {} }
+      onWidthChanged: geometryTimer.restart()
+      onHeightChanged: geometryTimer.restart()
+      onXChanged: geometryTimer.restart()
+      onYChanged: geometryTimer.restart()
 
       // Wizard keys arrive here after the focused text field, if any, has
       // had its turn; keyCatcher below lets them through in setup mode.
