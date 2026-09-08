@@ -56,7 +56,8 @@
       "unlockLockoutSec": 30,
       "lockSessionOnLockout": false,
       "lockoutNoLoopback": false,
-      "writeCardGeometry": false
+      "writeCardGeometry": false,
+      "autofillSubmit": false
     },
     "schema": [
       {
@@ -110,6 +111,13 @@
         "label": "Allow typing into the focused window (Ctrl+Enter)",
         "description": "Ctrl+Enter types the password, Ctrl+Shift+Enter the username, using wtype. Off, only the clipboard actions remain.",
         "defaultValue": true
+      },
+      {
+        "key": "autofillSubmit",
+        "type": "boolean",
+        "label": "Autofill presses Enter at the end",
+        "description": "Alt+Enter types the username, Tab and the password into the window the card was opened from. On, it presses Enter too; off (the default) it stops after the password so you can look first.",
+        "defaultValue": false
       },
       {
         "key": "notifyOnCopy",

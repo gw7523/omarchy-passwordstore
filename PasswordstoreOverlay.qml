@@ -139,6 +139,7 @@ Item {
     Quickshell.execDetached(["sh", "-c", "mkdir -p \"$1\" && printf '%s\\n' \"$2\" > \"$1/card-geometry\"", "sh", recentDir, w + "x" + h + "+" + x + "+" + y + (where !== "" ? " " + where : "")])
   }
   Timer { id: geometryTimer; interval: 120; repeat: false; onTriggered: root.publishGeometry() }
+  readonly property bool autofillSubmit: boolSetting("autofillSubmit", false)
 
   // The lockout pinentry-omarchy reports through status: while it holds,
   // nothing that decrypts is attempted and the legend shows the wait.
@@ -283,6 +284,7 @@ Item {
   }
 
   function switchVault(delta) {
+    disarmPreselect()
     if (vaults.length < 2) return
     var at = 0
     for (var i = 0; i < vaults.length; i++) if (vaults[i].id === activeVaultId) at = i
@@ -364,8 +366,9 @@ Item {
     if (n === 0) return rowHeight * 2   // room for the "no matches" message
     return n * rowHeight + (n - 1) * rowSpacing
   }
+  readonly property int menuHeight: menuOpen ? menuColumn.implicitHeight + contentSpacing : 0
   readonly property int searchCardHeight:
-    contentMargin * 2 + headerHeight + contentSpacing + visibleRowsHeight + contentSpacing + footerHeight
+    contentMargin * 2 + headerHeight + contentSpacing + visibleRowsHeight + menuHeight + contentSpacing + footerHeight
   readonly property int setupCardHeight:
     contentMargin * 2 + setupColumn.implicitHeight
   readonly property int editCardHeight:
@@ -378,14 +381,80 @@ Item {
 
   // --- open / close (the shell's overlay contract) ----------------------
 
+  // The window the card was opened from, so the entry for it can be
+  // preselected: a browser tab titled "Sign in · GitHub" lands on
+  // github.com/jack. Read once per open, never stored.
+  property string windowTitle: ""
+  property string windowClass: ""
+  property string windowAddress: ""
+  property bool windowMatched: false
+  property bool preselectArmed: false   // until the user touches the selection
+  property bool autofillAsked: false    // Alt+Enter on a window-picked row asks once
+  // Only a browser's title says which site is open; a terminal's title
+  // holding "github.com" (a path, a git log) must not pick an entry.
+  // Exact app ids, plus the -browser/-stable/-esr/-bin suffixes packaging
+  // adds; a prefix match would take zenity for zen.
+  readonly property var browserClasses: ["chromium", "chrome", "google-chrome", "brave", "brave-browser", "firefox", "librewolf", "zen", "vivaldi", "vivaldi-stable", "epiphany", "microsoft-edge", "org.mozilla.firefox", "org.chromium.chromium", "org.gnome.epiphany", "floorp", "waterfox", "helium"]
+  readonly property bool windowIsBrowser: {
+    var c = windowClass.toLowerCase().replace(/-(browser|stable|esr|bin|beta|nightly)$/, "")
+    return browserClasses.indexOf(c) >= 0
+  }
+  property bool preselectDone: false    // once per open: later listings do not re-pick
+  Process {
+    id: windowProcess
+    running: false
+    command: ["hyprctl", "activewindow", "-j"]
+    stdout: StdioCollector { id: windowStdout; waitForEnd: true }
+    onExited: function(exitCode) {
+      var parsed = null
+      try { parsed = JSON.parse(String(windowStdout.text || "")) } catch (e) { parsed = null }
+      root.windowTitle = parsed && parsed.title ? String(parsed.title) : ""
+      root.windowClass = parsed && parsed.class ? String(parsed.class) : ""
+      root.windowAddress = parsed && parsed.address ? String(parsed.address) : ""
+      root.preselectByWindow()
+    }
+  }
+
+  // Pick the entry whose name appears as a whole word in a browser's tab
+  // title (the browser's own name stripped): github.com or github in
+  // "Sign in · GitHub". The longest match wins. A tab title is the site's
+  // to write, so this is a suggestion: autofill from it asks once, and any
+  // key the user presses on the list disarms it.
+  readonly property string windowTitleBare: windowTitle.replace(/\s*[-–—·|]\s*(Mozilla Firefox|Firefox|Chromium|Google Chrome|Brave|Vivaldi|Zen Browser|LibreWolf|Microsoft Edge)\s*$/i, "")
+  function preselectByWindow() {
+    if (preselectDone || !preselectArmed || menuOpen || filterText !== "" || mode !== "search" || rows.length === 0) return
+    if (windowAddress === "" && windowClass === "" && windowTitle === "") return   // the window is not known yet
+    if (!windowIsBrowser) return
+    preselectDone = true
+    var hay = " " + windowTitleBare.toLowerCase().replace(/[^a-z0-9.]+/g, " ") + " "
+    if (hay.trim() === "") return
+    var best = -1, bestLen = 0
+    for (var i = 0; i < rows.length; i++) {
+      var title = String(rows[i].title || "").toLowerCase().replace(/^www\./, "")
+      var stem = title.replace(/\.[a-z]+$/, "")   // github.com -> github
+      if (title.length >= 4 && hay.indexOf(" " + title + " ") >= 0 && title.length > bestLen) { best = i; bestLen = title.length }
+      else if (stem.length >= 4 && stem !== title && hay.indexOf(" " + stem + " ") >= 0 && stem.length > bestLen) { best = i; bestLen = stem.length }
+    }
+    windowMatched = best >= 0
+    if (best >= 0) { cursorActive = true; selectedIndex = best; resultList.positionViewAtIndex(best, ListView.Contain) }
+  }
+  function disarmPreselect() { preselectArmed = false; windowMatched = false; autofillAsked = false }
+
   function open(payloadJson) {
     if (root.mode === "edit") root.resetEditor()
     if (root.mode === "share") root.leaveShare(true)
+    root.closeMenu()
     root.filterText = ""
     root.selectedIndex = 0
     root.cursorActive = true
+    root.windowMatched = false
+    root.windowAddress = ""
+    root.preselectArmed = true
+    root.preselectDone = false
+    root.autofillAsked = false
     root.opened = true
     geometryTimer.restart()
+    windowProcess.running = true
     root.autoRoute = true
     root.syncNote = ""
     // The store is re-read on every open: a `find` over a few hundred files
@@ -403,6 +472,7 @@ Item {
 
   function close() {
     root.opened = false
+    root.closeMenu()
     if (root.mode === "edit") root.resetEditor()
     // dismiss() reaches here through shell.hide(); a send in flight keeps its file.
     if (root.mode === "share" && !root.shareSending) root.leaveShare(true)
@@ -410,6 +480,7 @@ Item {
 
   function dismiss() {
     root.opened = false
+    root.closeMenu()
     if (root.mode === "edit") root.resetEditor()
     if (root.mode === "share" && !root.shareSending) root.leaveShare(true)
     if (root.shell && typeof root.shell.hide === "function")
@@ -515,6 +586,7 @@ Item {
 
   function setFilter(text) {
     if (text === filterText) return
+    disarmPreselect()
     filterText = text
     selectedIndex = 0
     cursorActive = true
@@ -528,6 +600,9 @@ Item {
     clipboardProbe.paste()
     var pasted = clipboardProbe.text.replace(/\s+/g, " ").trim()
     clipboardProbe.text = ""
+    // A pasted URL searches by its host, without the www.
+    var m = pasted.match(/^https?:\/\/(?:[^\/?#@]*@)?(\[[^\]]+\]|[^\/:?#]+)/i)
+    if (m) pasted = m[1].toLowerCase().replace(/^www\./, "")
     if (pasted !== "") setFilter(filterText + pasted)
   }
 
@@ -535,6 +610,7 @@ Item {
 
   function select(delta) {
     if (rows.length === 0) return
+    disarmPreselect()
     cursorActive = true
     selectedIndex = Math.max(0, Math.min(rows.length - 1, selectedIndex + delta))
     resultList.positionViewAtIndex(selectedIndex, ListView.Contain)
@@ -542,6 +618,7 @@ Item {
 
   function selectAbsolute(index) {
     if (rows.length === 0) return
+    disarmPreselect()
     cursorActive = true
     selectedIndex = Math.max(0, Math.min(rows.length - 1, index))
     resultList.positionViewAtIndex(selectedIndex, ListView.Contain)
@@ -584,6 +661,7 @@ Item {
     entries = (parsed && parsed.entries) ? parsed.entries : []
     recent = (parsed && parsed.recent) ? parsed.recent : []
     otpAvailable = !!(parsed && parsed.otp)
+    Qt.callLater(preselectByWindow)
   }
 
   Process {
@@ -622,7 +700,7 @@ Item {
     if (action === "edit-terminal") action = "edit"
     var terminalAction = action === "edit" || action === "insert" || action === "generate"
     if (!name && !(action === "insert" || action === "generate")) return
-    if ((action === "type-password" || action === "type-username") && !allowTyping) return
+    if ((action === "type-password" || action === "type-username" || action === "autofill") && !allowTyping) return
     if (action === "copy-otp" && !otpAvailable) return
 
     var command = [actionPath, action, name,
@@ -631,6 +709,10 @@ Item {
                    "--username-keys", usernameKeys]
     if (storeDir !== "") command.push("--store", storeDir)
     if (!notifyOnCopy) command.push("--quiet")
+    if (action === "autofill") {
+      if (autofillSubmit) command.push("--submit")
+      if (windowAddress !== "") command.push("--window", windowAddress)
+    }
     // The push after a change is the helper's job, once the terminal closes;
     // it looks the vault's backend up by id.
     if (terminalAction && syncActive) command.push("--sync", "--vault", activeVaultId)
@@ -642,7 +724,53 @@ Item {
     actionProcess.running = true
   }
 
-  function activateSelected(action) { runAction(action, selectedEntry) }
+  function activateSelected(action) {
+    // A row the window picked is a suggestion; typing a password into that
+    // window takes a second Alt+Enter, with the title on screen.
+    if (action === "autofill" && windowMatched && preselectArmed && !autofillAsked) { autofillAsked = true; return }
+    runAction(action, selectedEntry)
+  }
+
+  // --- the row menu ---------------------------------------------------------
+
+  // Right arrow on a row lists what can be done with it; the modifier keys
+  // stay, the menu makes them discoverable.
+  property bool menuOpen: false
+  property int menuIndex: 0
+  readonly property var menuRows: {
+    var out = [{ label: "Copy password", keys: "Enter", action: "copy-password" },
+               { label: "Copy username", keys: "Alt+U", action: "copy-username" }]
+    if (otpAvailable) out.push({ label: "Copy OTP code", keys: "Alt+O", action: "copy-otp" })
+    if (allowTyping) out.push({ label: autofillSubmit ? "Autofill username, Tab, password, Enter" : "Autofill username, Tab, password", keys: "Alt+Enter", action: "autofill" },
+                              { label: "Type password", keys: "Ctrl+Enter", action: "type-password" })
+    out.push({ label: "Open URL", keys: "Alt+L", action: "open-url" },
+             { label: "Share over LocalSend", keys: "Alt+S", action: "share" },
+             { label: "Edit", keys: "Alt+E", action: "edit" })
+    return out
+  }
+  function openMenu() {
+    if (!selectedEntry) return
+    menuIndex = 0
+    menuOpen = true
+  }
+  function closeMenu() { menuOpen = false; menuIndex = 0 }
+  onMenuRowsChanged: menuIndex = Math.max(0, Math.min(menuRows.length - 1, menuIndex))
+  function menuKey(event) {
+    var ctrl = event.modifiers & Qt.ControlModifier
+    if (event.key === Qt.Key_Escape || event.key === Qt.Key_Left) { closeMenu(); return true }
+    if (event.key === Qt.Key_Down || (ctrl && (event.key === Qt.Key_N || event.key === Qt.Key_J))) { menuIndex = Math.min(menuRows.length - 1, menuIndex + 1); return true }
+    if (event.key === Qt.Key_Up || (ctrl && (event.key === Qt.Key_P || event.key === Qt.Key_K))) { menuIndex = Math.max(0, menuIndex - 1); return true }
+    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) { runMenu(menuIndex); return true }
+    return false
+  }
+  function runMenu(index) {
+    if (index < 0 || index >= menuRows.length) return
+    var action = menuRows[index].action
+    var entry = selectedEntry
+    closeMenu()
+    if (action === "share") openShare(entry)
+    else runAction(action, entry)
+  }
 
   // Alt+N: the query, if any, becomes the new entry's name.
   function insertNew(action) {
@@ -672,6 +800,7 @@ Item {
   property string editCreated: ""
   property string editModified: ""
   property var editExtra: []
+  property string editUrl: ""
   property bool editRevealed: false
   property bool editReading: false     // decrypting: the card hides so pinentry can have the keyboard
   // The name and username as read, so an unchanged entry is saved under
@@ -758,6 +887,7 @@ Item {
     }
     passwordField.text = ""
     notesArea.text = ""
+    urlField.text = ""
     if (entry) {
       editReading = true
       readBuffer = ""
@@ -776,6 +906,7 @@ Item {
   function resetEditor() {
     passwordField.text = ""
     notesArea.text = ""
+    urlField.text = ""
     nameField.text = ""
     usernameField.text = ""
     readBuffer = ""
@@ -844,6 +975,7 @@ Item {
       editOrigUser = inside
     }
     notesArea.text = String(parsed.notes || "")
+    urlField.text = String(parsed.url || "")
     editCreated = String(parsed.created || "")
     editModified = String(parsed.modified || "")
     editExtra = Array.isArray(parsed.extra) ? parsed.extra.map(function(l) { return String(l) }) : []
@@ -912,9 +1044,13 @@ Item {
     if (!usernameInPath && editEntry !== "" && title !== editOrigTitle) name = title
     if (!validEntryName(name)) { editError = "That name will not do as a pass entry"; return }
     if (name !== editEntry && entries.indexOf(name) >= 0) { editError = "There is already an entry named " + name; return }
+    var url = urlField.text.trim()
+    if (url !== "" && !/^[a-z][a-z0-9+.-]*:/i.test(url)) url = "https://" + url
+    if (url !== "" && !/^https?:\/\//i.test(url)) { editError = "The URL has to start with http:// or https://"; return }
     var payload = {
       password: passwordField.text,
       username: user,
+      url: url,
       notes: notesArea.text,
       extra: editExtra,
       created: editCreated
@@ -1901,8 +2037,8 @@ Item {
   readonly property string hintText: {
     var hints = ["Enter copy password", "Alt+U username"]
     if (otpAvailable) hints.push("Alt+O OTP")
-    if (allowTyping) hints.push("Ctrl+Enter type")
-    hints.push("Alt+E edit", "Alt+N new", "Alt+S share")
+    if (allowTyping) hints.push("Alt+Enter autofill", "Ctrl+Enter type")
+    hints.push("→ more", "Alt+E edit", "Alt+N new")
     if (vaults.length > 1) hints.push("Tab vault")
     hints.push("F2 setup")
     var line = hints.join("  ·  ")
@@ -1910,6 +2046,7 @@ Item {
     if (status && status.secretKeyPresent === false)
       line += "\nNo secret key for " + storeKeyLabel + " in this keyring (F2)"
     if (locked) line += "\nLocked after too many wrong passphrases  ·  " + formatRemaining(lockoutRemaining)
+    if (autofillAsked && selectedEntry) line += "\nAlt+Enter again types " + selectedEntry.name + " into “" + windowTitleBare + "”"
     return line
   }
 
@@ -2106,10 +2243,17 @@ Item {
           var alt = event.modifiers & Qt.AltModifier
           var shift = event.modifiers & Qt.ShiftModifier
 
+          if (root.menuOpen) {
+            root.menuKey(event)
+            event.accepted = true   // nothing falls through to the list or Qt focus while the menu is up
+            return
+          }
           if (event.key === Qt.Key_Escape) {
             if (root.filterText) root.setFilter("")
             else root.dismiss()
             event.accepted = true
+          } else if (event.key === Qt.Key_Right) {
+            root.openMenu(); event.accepted = true
           } else if (Util.editsFilter(event, root.filterText)) {
             root.setFilter(Util.editedFilter(event, root.filterText))
             event.accepted = true
@@ -2138,7 +2282,7 @@ Item {
           } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
             if (ctrl && shift) root.activateSelected("type-username")
             else if (ctrl) root.activateSelected("type-password")
-            else if (alt) root.activateSelected("copy-username")
+            else if (alt) root.activateSelected("autofill")
             else root.activateSelected("copy-password")
             event.accepted = true
           } else if (alt && event.key === Qt.Key_U) {
@@ -2149,6 +2293,8 @@ Item {
             root.activateSelected(shift ? "edit-terminal" : "edit"); event.accepted = true
           } else if (alt && event.key === Qt.Key_S) {
             root.openShare(root.selectedEntry); event.accepted = true
+          } else if (alt && event.key === Qt.Key_L) {
+            root.activateSelected("open-url"); event.accepted = true
           } else if (alt && event.key === Qt.Key_N) {
             root.insertNew("insert"); event.accepted = true
           } else if (alt && event.key === Qt.Key_G) {
@@ -2205,7 +2351,8 @@ Item {
                 ? (root.filterText ? root.rows.length + " / " + root.entries.length : String(root.entries.length))
                 : ""
               var name = root.vaults.length > 1 || root.vaultsOnRecord ? root.activeVault.name : ""
-              return name + (name !== "" && count !== "" ? "  ·  " : "") + count
+              var hint = root.windowMatched && root.preselectArmed ? "for “" + (root.windowTitleBare.length > 28 ? root.windowTitleBare.slice(0, 27) + "…" : root.windowTitleBare) + "”" : ""
+              return [hint, name, count].filter(function(s) { return s !== "" }).join("  ·  ")
             }
             color: root.foreground
             opacity: 0.45
@@ -2309,6 +2456,7 @@ Item {
                 acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
                 onContainsMouseChanged: if (containsMouse) {
                   root.cursorActive = true
+                  if (root.selectedIndex !== row.index) root.disarmPreselect()
                   root.selectedIndex = row.index
                 }
                 onClicked: function(mouse) {
@@ -2355,6 +2503,29 @@ Item {
               opacity: root.lastError !== "" ? 1 : 0.7
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
+            }
+          }
+        }
+
+        // The row menu: the selected entry's actions, keys alongside.
+        Column {
+          id: menuColumn
+          width: parent.width
+          spacing: root.rowSpacing
+          visible: root.menuOpen
+
+          Repeater {
+            model: root.menuOpen ? root.menuRows : []
+            delegate: ChoiceRow {
+              required property var modelData
+              required property int index
+              hasCursor: root.menuIndex === index
+              lead: ""
+              title: modelData.label
+              subtitle: ""
+              trail: modelData.keys
+              onHoveredRow: root.menuIndex = index
+              onPicked: root.runMenu(index)
             }
           }
         }
@@ -2428,8 +2599,17 @@ Item {
         EditField {
           id: usernameField
           placeholderText: "jack@example.com"
-          KeyNavigation.tab: passwordField
+          KeyNavigation.tab: urlField
           KeyNavigation.backtab: nameField
+          onAccepted: urlField.forceActiveFocus()
+        }
+
+        EditLabel { text: "URL" }
+        EditField {
+          id: urlField
+          placeholderText: "https://github.com/login"
+          KeyNavigation.tab: passwordField
+          KeyNavigation.backtab: usernameField
           onAccepted: passwordField.forceActiveFocus()
         }
 
@@ -2461,7 +2641,7 @@ Item {
             // Tab skips the generator controls (they are mouse and Alt+G
             // territory) and lands in the notes.
             KeyNavigation.tab: notesArea
-            KeyNavigation.backtab: usernameField
+            KeyNavigation.backtab: urlField
             onAccepted: notesArea.forceActiveFocus()
           }
           Text {
