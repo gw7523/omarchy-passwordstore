@@ -251,11 +251,11 @@ check "sync-push: custom command runs in the store with \$STORE" '.ok == true an
 out=$("$SETUP" sync-push)
 check "sync-push: a failing command reports the error" '.ok == false and (.error | test("nope"))' "$out"
 grep -q "sync failed" "$work/notify.calls" && ok "sync-push: …and notifies" || bad "sync-push: …and notifies"
-mkdir -p "$XDG_STATE_HOME/omarchy-passwordstore"; printf 'offline' > "$XDG_STATE_HOME/omarchy-passwordstore/last-pull-error"
+mkdir -p "$XDG_STATE_HOME/omarchy-passwordstore"; printf 'offline' > "$XDG_STATE_HOME/omarchy-passwordstore/last-pull-error-personal"
 out=$("$SETUP" sync-pull --vault personal)
 check "sync-pull: custom pull command runs" '.ok == true' "$out"
 [[ -e $s1/pulled ]] && ok "sync-pull: …in the store" || bad "sync-pull: …in the store"
-[[ ! -e $XDG_STATE_HOME/omarchy-passwordstore/last-pull-error ]] && ok "sync-pull: a pull that works ends the failed-pull state" || bad "sync-pull: a pull that works ends the failed-pull state"
+[[ ! -e $XDG_STATE_HOME/omarchy-passwordstore/last-pull-error-personal ]] && ok "sync-pull: a pull that works ends the failed-pull state" || bad "sync-pull: a pull that works ends the failed-pull state"
 
 # vaults set with `omarchy bar set` and no --json arrive as a string.
 write_shell_json "$(jq -n --arg s1 "$s1" '{activeVaultId: "p",
@@ -475,7 +475,7 @@ printf -- '-----BEGIN PGP PUBLIC KEY BLOCK-----\nplaceholder\n' > "$work/pub-kee
 
 # --- bar-status and forget --------------------------------------------------
 
-export XDG_RUNTIME_DIR="$work/run3"; mkdir -p "$XDG_RUNTIME_DIR"; rm -f "$XDG_STATE_HOME/omarchy-passwordstore/last-pull-error"
+export XDG_RUNTIME_DIR="$work/run3"; mkdir -p "$XDG_RUNTIME_DIR"; rm -f "$XDG_STATE_HOME/omarchy-passwordstore/last-pull-error-personal"
 b="$work/barstore"; mkdir -p "$b"; printf '%s\n' "$ALICE" > "$b/.gpg-id"
 out=$("$SETUP" bar-status --store "$b" --vault personal)
 check "bar-status: a plain directory has nothing unpushed and no failed pull" '.unpushed == 0 and .pullFailed == false and .locked == false' "$out"
@@ -485,10 +485,10 @@ git -C "$b" add -A; git -C "$b" commit -q -m one; git -C "$b" remote add origin 
 : > "$b/x.gpg"; git -C "$b" add -A; git -C "$b" commit -q -m two
 out=$("$SETUP" bar-status --store "$b" --vault personal)
 check "bar-status: counts commits not yet pushed" '.unpushed == 1' "$out"
-printf 'offline' > "$XDG_STATE_HOME/omarchy-passwordstore/last-pull-error" 2>/dev/null || { mkdir -p "$XDG_STATE_HOME/omarchy-passwordstore"; printf 'offline' > "$XDG_STATE_HOME/omarchy-passwordstore/last-pull-error"; }
+printf 'offline' > "$XDG_STATE_HOME/omarchy-passwordstore/last-pull-error-personal" 2>/dev/null || { mkdir -p "$XDG_STATE_HOME/omarchy-passwordstore"; printf 'offline' > "$XDG_STATE_HOME/omarchy-passwordstore/last-pull-error-personal"; }
 out=$("$SETUP" bar-status --store "$b" --vault personal)
 check "bar-status: a failed pull is flagged" '.pullFailed == true' "$out"
-rm -f "$XDG_STATE_HOME/omarchy-passwordstore/last-pull-error"
+rm -f "$XDG_STATE_HOME/omarchy-passwordstore/last-pull-error-personal"
 "$PLUGIN_DIR/pinentry-omarchy" --set-policy '{"attempts": 2, "lockoutSec": 30}' >/dev/null; "$PLUGIN_DIR/pinentry-omarchy" --unlock-failed >/dev/null; "$PLUGIN_DIR/pinentry-omarchy" --unlock-failed >/dev/null
 out=$("$SETUP" bar-status --store "$b" --vault personal)
 check "bar-status: the lockout is flagged" '.locked == true' "$out"
@@ -513,13 +513,16 @@ grep -qx 'CLEAR_PASSPHRASE --mode=normal GRIP1 /bye' "$work/agent.calls" && grep
   || bad "forget: CLEAR_PASSPHRASE in normal mode (the OpenPGP cache) and user mode per keygrip, never the fingerprint ($(cat "$work/agent.calls" | tr '\n' '|'))"
 [[ ! -e $work/wlcopy.calls ]] && ok "forget: leaves the clipboard alone when no copy of ours is counting down" || bad "forget: leaves the clipboard alone when no copy of ours is counting down"
 [[ ! -e $XDG_RUNTIME_DIR/omarchy-passwordstore/share/left.asc && $(jq -r .sharesRemoved <<<"$out") == 1 ]] && ok "forget: removes files share left behind" || bad "forget: removes files share left behind"
-( exec -a "passwordstore clip sleep" bash -c 'sleep 20 & wait' ) & sleeper=$!; sleep 0.3
+( exec -a "passwordstore clip sleep" bash -c "trap 'kill %1; exit 1' TERM; sleep 20 & wait" ) & sleeper=$!; sleep 0.3
 : > "$XDG_RUNTIME_DIR/omarchy-passwordstore/share/going.asc"; : > "$XDG_RUNTIME_DIR/omarchy-passwordstore/share/going.asc.sending"
+: > "$XDG_RUNTIME_DIR/omarchy-passwordstore/share/stale.asc"; : > "$XDG_RUNTIME_DIR/omarchy-passwordstore/share/stale.asc.sending"; touch -d '-2 hours' "$XDG_RUNTIME_DIR/omarchy-passwordstore/share/stale.asc.sending"
 out=$("$SETUP" forget --store "$b" --vault personal)
+sleeper_gone=true; pgrep -u "$UID" -f '^passwordstore clip sleep' >/dev/null && sleeper_gone=false
 kill "$sleeper" 2>/dev/null; wait "$sleeper" 2>/dev/null
-grep -qx -- '--clear' "$work/wlcopy.calls" && [[ $(jq -r .clipboard <<<"$out") == true ]] && ! pgrep -f '^passwordstore clip sleep' >/dev/null \
+grep -qx -- '--clear' "$work/wlcopy.calls" && [[ $(jq -r .clipboard <<<"$out") == true ]] && $sleeper_gone \
   && ok "forget: clears the clipboard while a copy of ours is counting down, and ends the countdown" || bad "forget: clears the clipboard while a copy of ours is counting down, and ends the countdown"
-[[ -e $XDG_RUNTIME_DIR/omarchy-passwordstore/share/going.asc && $(jq -r .sharesRemoved <<<"$out") == 0 ]] && ok "forget: leaves a share the picker is still holding" || bad "forget: leaves a share the picker is still holding"
+[[ -e $XDG_RUNTIME_DIR/omarchy-passwordstore/share/going.asc && ! -e $XDG_RUNTIME_DIR/omarchy-passwordstore/share/stale.asc && $(jq -r .sharesRemoved <<<"$out") == 1 ]] \
+  && ok "forget: leaves a share the picker is still holding, removes one whose marker went stale" || bad "forget: leaves a share the picker is still holding, removes one whose marker went stale ($out)"
 out=$(AGENT_FAILS=1 "$SETUP" forget --store "$b" --vault personal)
 check "forget: an agent that refuses is reported, not counted as forgotten" '.ok == false and .clearedKeys == 0 and (.error | test("refused"))' "$out"
 rm -f "$work/bin/gpg-connect-agent" "$work/bin/wl-copy"; unset XDG_RUNTIME_DIR

@@ -149,13 +149,19 @@ Item {
     }
     if (stores.length === 0) stores.push(storeDir)
     // The editor is the one place a secret sits in QML, and the card must
-    // not still be up, revealed, when the seat comes back.
+    // not still be up, revealed, when the seat comes back. A share the
+    // picker is about to send is left to it.
     if (opened) {
       if (mode === "edit") resetEditor()
-      if (mode === "share") leaveShare(true)
+      if (mode === "share" && !shareSending) leaveShare(true)
       dismiss()
     }
-    forgetQueue = stores
+    savePayload = ""
+    // Union with whatever is still queued: a seat-wide forget under way
+    // must not be cut short by an idle one.
+    var queue = forgetQueue.slice()
+    for (var j = 0; j < stores.length; j++) if (queue.indexOf(stores[j]) < 0) queue.push(stores[j])
+    forgetQueue = queue
     console.log("passwordstore: forgetting cached passphrases:", reason)
     forgetNext()
   }
@@ -201,6 +207,8 @@ Item {
     command: ["hyprctl", "locked"]
     stdout: StdioCollector { id: lockedStdout; waitForEnd: true }
     onExited: function(exitCode) {
+      // A compositor that could not be asked is not an unlock.
+      if (exitCode !== 0) return
       var out = String(lockedStdout.text || "").trim().toLowerCase()
       var now = out === "true" || out === "yes" || out === "1"
       if (now && !root.sessionLocked) root.forget("session locked", true)
@@ -215,14 +223,16 @@ Item {
   }
   // logind announces sleep on the system bus; gdbus prints each signal. If
   // gdbus goes away (missing, bus restarted) it is tried again later.
+  // (running stays a binding: the retry flips a flag, so the setting keeps its say.)
+  property bool sleepWanted: true
   Process {
     id: sleepProcess
-    running: root.clearOnLock
+    running: root.clearOnLock && root.sleepWanted
     command: ["gdbus", "monitor", "--system", "--dest", "org.freedesktop.login1", "--object-path", "/org/freedesktop/login1"]
     stdout: SplitParser { onRead: function(line) { if (/PrepareForSleep \(true/.test(line)) root.forget("sleep", true) } }
-    onExited: function(exitCode) { if (root.clearOnLock) sleepRetry.start() }
+    onExited: function(exitCode) { root.sleepWanted = false; sleepRetry.start() }
   }
-  Timer { id: sleepRetry; interval: 30000; repeat: false; onTriggered: if (root.clearOnLock && !sleepProcess.running) sleepProcess.running = true }
+  Timer { id: sleepRetry; interval: 30000; repeat: false; onTriggered: root.sleepWanted = true }
 
   // The lockout pinentry-omarchy reports through status: while it holds,
   // nothing that decrypts is attempted and the legend shows the wait.
