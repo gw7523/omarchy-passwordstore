@@ -58,7 +58,8 @@
       "unlockAttempts": 5,
       "unlockLockoutSec": 30,
       "lockSessionOnLockout": false,
-      "lockoutNoLoopback": false
+      "lockoutNoLoopback": false,
+      "writeCardGeometry": false
     },
     "schema": [
       {
@@ -205,6 +206,13 @@
         "type": "boolean",
         "label": "Refuse loopback pinentry (lockout coverage)",
         "description": "Off by default. On, gpg-agent.conf gets no-allow-loopback-pinentry, so `gpg --pinentry-mode loopback` (which never passes through the prompt and so cannot be counted) is refused; other tools that rely on loopback stop working.",
+        "defaultValue": false
+      },
+      {
+        "key": "writeCardGeometry",
+        "type": "boolean",
+        "label": "Write the card's screen box for test/capture",
+        "description": "Development only. Writes WxH+X+Y of the card to ~/.local/state/omarchy-passwordstore/card-geometry whenever it changes, so screenshots can be cropped to the card.",
         "defaultValue": false
       }
     ]

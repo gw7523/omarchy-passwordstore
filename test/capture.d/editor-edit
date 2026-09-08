@@ -1,0 +1,8 @@
+# An existing entry opened in the editor (decrypts: throwaway key).
+vault key
+text git
+key -M alt -k e -m alt
+pin
+wait 2
+key -M alt -k r -m alt
+shot main

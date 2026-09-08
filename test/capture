@@ -1,0 +1,249 @@
+#!/bin/bash
+
+# Capture the card for a PR: the same scene, in the same window at the
+# same theme and scale, on a base branch ("before") and on a feature
+# branch ("after"), over a synthetic vault, cropped to the card, labelled,
+# and joined side by side.
+#
+#   test/capture --scene SCENE --label before|after [--out DIR] [--branch REF]
+#   test/capture --join DIR SCENE           # before + after -> SCENE.png
+#   test/capture --list
+#
+# A scene is a file in test/capture.d/: one step per line (see the files
+# there). Nothing is typed unless the layer set is exactly the background,
+# the bar and the card (or, for the `pin` step, the card's own pinentry
+# with the card hidden), checked right before every keystroke; the card
+# must be shown to be on the synthetic vault before the first one; and
+# every step that could fail stops the run. Someone has to be standing by
+# the seat: the card takes the keyboard for a few seconds.
+#
+# The vault is a temporary directory of empty *.gpg files (the search
+# never decrypts) unless the scene says `vault key`, in which case a
+# throwaway key with passphrase "capture" is generated in the keyring
+# (deleted afterwards, revocation certificate included) so scenes that
+# decrypt can answer the prompt. The user's own vaults are taken off the
+# bar entry for the run, so no real name, path or backend is on screen,
+# and put back from a copy when it ends, however it ends.
+#
+# With --branch, the live plugin checkout (what the plugins symlink points
+# at, not this worktree) is detached at REF and the shell restarted; the
+# original branch is restored afterwards. The checkout must be clean.
+#
+# The crop uses the box the card itself writes to the state dir
+# (writeCardGeometry, switched on for the run), not a guess.
+
+set -euo pipefail
+set -f
+
+TEST_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly TEST_DIR
+readonly SCENES="$TEST_DIR/capture.d"
+readonly PLUGIN_ID="io.github.gw7523.passwordstore"
+readonly SHELL_JSON="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/shell.json"
+readonly STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-passwordstore"
+LIVE_DIR="$(readlink -f -- "${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$PLUGIN_ID" 2>/dev/null || true)"
+readonly LIVE_DIR
+
+scene="" label="" out="docs/pr" branch="" join="" list=false
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --scene) scene=${2:-}; shift 2 ;;
+    --label) label=${2:-}; shift 2 ;;
+    --out) out=${2:-}; shift 2 ;;
+    --branch) branch=${2:-}; shift 2 ;;
+    --join) join=${2:-}; scene=${3:-}; shift 3 ;;
+    --list) list=true; shift ;;
+    *) echo "capture: unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+die() { echo "capture: $*" >&2; exit 1; }
+
+if $list; then ls "$SCENES"; exit 0; fi
+
+if [[ -n $join ]]; then
+  [[ -f $join/$scene-before.png && -f $join/$scene-after.png ]] || die "need $join/$scene-before.png and -after.png"
+  magick "$join/$scene-before.png" "$join/$scene-after.png" -bordercolor none -border 12 +append "$join/$scene.png"
+  echo "$join/$scene.png"; exit 0
+fi
+
+[[ -n $scene && -f $SCENES/$scene ]] || die "--scene NAME (one of: $(ls "$SCENES" | tr '\n' ' '))"
+[[ $label == before || $label == after ]] || die "--label before|after"
+[[ -n $LIVE_DIR && -d $LIVE_DIR/.git ]] || die "the plugin symlink does not point at a git checkout"
+
+# --- preflight, before anything is touched -------------------------------------
+for tool in hyprctl wtype grim magick jq gpg pass; do command -v $tool >/dev/null 2>&1 || die "$tool is needed"; done
+hyprctl layers >/dev/null 2>&1 || die "hyprctl cannot reach the compositor"
+[[ -f $SHELL_JSON ]] || die "no $SHELL_JSON"
+jq -e --arg id "$PLUGIN_ID" '[.bar.layout[][] | select(type == "object" and .id == $id)] | length == 1' "$SHELL_JSON" >/dev/null \
+  || die "the plugin's bar entry is missing or not an object; put the widget on the bar first"
+if [[ -n $branch ]]; then
+  [[ -z $(git -C "$LIVE_DIR" status --porcelain) ]] || die "the live checkout $LIVE_DIR has uncommitted changes"
+  git -C "$LIVE_DIR" rev-parse -q --verify "$branch^{commit}" >/dev/null || die "no such ref: $branch"
+fi
+monitor=$(hyprctl monitors -j | jq -r '.[] | select(.focused) | .name' | head -n1)
+[[ -n $monitor ]] || die "no focused monitor"
+mkdir -p "$out"
+
+# --- the scene file: what it needs -------------------------------------------------
+vault_key=false; needs=""
+while IFS= read -r line; do
+  [[ $line == "vault key" ]] && vault_key=true
+  [[ $line == "# needs: "* ]] && needs=${line#"# needs: "}
+done < "$SCENES/$scene"
+# A scene about a surface the branch does not have would file a picture of
+# something else under its name.
+if [[ -n $needs ]]; then
+  ref=${branch:-HEAD}
+  git -C "$LIVE_DIR" show "$ref:PasswordstoreOverlay.qml" 2>/dev/null | grep -qF -- "$needs" \
+    || die "scene $scene needs '$needs' in the overlay, which $ref does not have"
+fi
+
+ns() { hyprctl layers | grep -o 'namespace: [a-z0-9_.-]*' | sed 's/namespace: //' | sort -u | tr '\n' ' '; }
+readonly CARD="omarchy-background omarchy-bar omarchy-passwordstore "
+readonly PIN="omarchy-background omarchy-bar omarchy-pinentry "
+card_up() { hyprctl layers | grep -q 'namespace: omarchy-passwordstore'; }
+pin_up() { hyprctl layers | grep -q 'namespace: omarchy-pinentry'; }
+clean() { [[ $(ns) == "$CARD" ]] || die "ABORT, layers are: $(ns)"; }
+
+# --- state to restore, whatever happens ------------------------------------------
+tmp=$(mktemp -d); vault=$(mktemp -d /tmp/capture-vault.XXXX); fpr=""; restored=false
+cp "$SHELL_JSON" "$tmp/shell.json"
+orig_ref=$(git -C "$LIVE_DIR" symbolic-ref -q --short HEAD || git -C "$LIVE_DIR" rev-parse HEAD)
+restore() {
+  $restored && return; restored=true
+  trap '' INT TERM
+  omarchy-shell shell hide "$PLUGIN_ID" >/dev/null 2>&1 || true
+  # A pinentry of ours may still be up (the run stopped mid-decrypt): it is
+  # the throwaway key's, and the key is about to go.
+  # Only a prompt drawn from the staged copy or this checkout's pinentry
+  # dir: a real prompt of another program is not ours to kill.
+  for _ in 1 2 3 4; do
+    pin_up || break
+    pkill -f "^qs -p ${XDG_RUNTIME_DIR:-/nonexistent}/pinentry-omarchy/" 2>/dev/null || true
+    pkill -f "^qs -p $LIVE_DIR/pinentry/" 2>/dev/null || true
+    sleep 0.5
+  done
+  # The user's vault list exists only in the backup until it is back on
+  # disk and reads back whole; the backup stays if that fails.
+  if cp "$tmp/shell.json" "$SHELL_JSON.capture.tmp" && mv -f "$SHELL_JSON.capture.tmp" "$SHELL_JSON" \
+     && cmp -s "$tmp/shell.json" "$SHELL_JSON" && jq -e . "$SHELL_JSON" >/dev/null 2>&1; then
+    rm -rf "$tmp"
+  else
+    echo "capture: COULD NOT PUT $SHELL_JSON BACK; the original is $tmp/shell.json" >&2
+  fi
+  rm -rf "$vault"; rm -f "$STATE_DIR/recent-capture" "$STATE_DIR/card-geometry"
+  if [[ -n $fpr ]]; then
+    gpg --batch --yes --delete-secret-and-public-key "$fpr" >/dev/null 2>&1 || echo "capture: could not delete the throwaway key $fpr" >&2
+    rm -f "${GNUPGHOME:-$HOME/.gnupg}/openpgp-revocs.d/$fpr.rev"
+  fi
+  if [[ -n $branch ]]; then
+    git -C "$LIVE_DIR" checkout -q "$orig_ref" || echo "capture: could not return $LIVE_DIR to $orig_ref" >&2
+  fi
+  # The shell reloads shell.json on its own; a restart makes sure the live
+  # instance is the original branch again and holds nothing of the run.
+  omarchy-restart-shell >/dev/null 2>&1 || true; sleep 8
+}
+# Ctrl+C ends the run: restore runs from EXIT, and nothing after the
+# interrupted step is sent to the seat.
+trap restore EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# --- the synthetic vault -----------------------------------------------------------
+if $vault_key; then
+  status=$(gpg --batch --status-fd 1 --pinentry-mode loopback --passphrase capture --quick-generate-key "Capture <capture@example.invalid>" default default 0 2>/dev/null) || true
+  fpr=$(awk '$2 == "KEY_CREATED" { print $4 }' <<<"$status" | head -n1)
+  [[ $fpr =~ ^[0-9A-F]{40}$ ]] || { fpr=""; die "could not generate the throwaway key"; }
+  PASSWORD_STORE_DIR=$vault pass init "$fpr" >/dev/null
+  for e in "github.com/jack" "amazon.com/jack@example.com" "Bank of Somewhere/jack"; do
+    printf 'Tr0ub4dor&3\nusername: %s\nurl: https://%s\ncreated: 2026-09-01T10:00:00-04:00\nmodified: 2026-09-06T10:00:00-04:00\n\nrecovery: 1234-5678\n' "${e##*/}" "${e%%/*}" \
+      | PASSWORD_STORE_DIR=$vault pass insert -m -f "$e" >/dev/null
+  done
+else
+  echo FAKE > "$vault/.gpg-id"
+  for e in "github.com/jack" "amazon.com/jack@example.com" "Bank of Somewhere/jack" "work/vpn/jack.h" "wifi/home" "steam/jack" "netflix.com/family@example.com"; do
+    mkdir -p "$vault/$(dirname "$e")"; : > "$vault/$e.gpg"
+  done
+fi
+mkdir -p "$STATE_DIR"
+printf 'github.com/jack\namazon.com/jack@example.com\n' > "$STATE_DIR/recent-capture"
+
+# Only the synthetic vault on the bar entry for the run: no real name,
+# path or backend can reach the screen. The copy above brings everything back.
+jq --arg id "$PLUGIN_ID" --arg t "$vault" \
+  '(.bar.layout[][] | select(type == "object" and .id == $id)) |= (. + {vaults: [{id: "capture", name: "Personal", storeDir: $t, syncBackend: "local"}], activeVaultId: "capture", writeCardGeometry: true})' \
+  "$SHELL_JSON" > "$SHELL_JSON.capture.tmp"
+jq -e --arg id "$PLUGIN_ID" --arg t "$vault" '[.bar.layout[][] | select(type == "object" and .id == $id)] | .[0] | .activeVaultId == "capture" and .vaults == [{id: "capture", name: "Personal", storeDir: $t, syncBackend: "local"}]' \
+  "$SHELL_JSON.capture.tmp" >/dev/null || die "could not put the synthetic vault on the bar entry"
+mv -f "$SHELL_JSON.capture.tmp" "$SHELL_JSON"
+
+[[ -n $branch ]] && git -C "$LIVE_DIR" checkout -q --detach "$branch"
+# The overlay is keepLoaded and reads its settings from the shell's copy of
+# shell.json: only a restart is known to put the new vault list and
+# writeCardGeometry in front of it.
+omarchy-restart-shell >/dev/null 2>&1 || die "could not restart the shell"
+sleep 9
+
+# The helper reads shell.json from disk: this proves the file, not the
+# card. The card is proven below, by the geometry only this run's overlay
+# can write.
+seen=$("$LIVE_DIR/passwordstore-setup" status --vault capture | jq -r '.store // ""')
+[[ $seen == "$vault" ]] || die "shell.json does not carry the synthetic vault (helper sees '$seen'); nothing was typed"
+! pin_up || die "a passphrase prompt is already up; nothing was typed"
+rm -f "$STATE_DIR/card-geometry"
+geometry_start=$(date +%s)
+
+# The card's box, as the overlay of this run published it (the file is
+# removed above, so a leftover from an earlier run cannot serve), settled:
+# two reads 150 ms apart must agree.
+card_geometry() {
+  local geo again
+  geo=$(cat "$STATE_DIR/card-geometry" 2>/dev/null || true)
+  [[ ${geo%% *} =~ ^[0-9]+x[0-9]+\+[0-9]+\+[0-9]+$ ]] || return 1
+  [[ $(stat -c %Y "$STATE_DIR/card-geometry" 2>/dev/null || echo 0) -ge $geometry_start ]] || return 1
+  sleep 0.15
+  again=$(cat "$STATE_DIR/card-geometry" 2>/dev/null || true)
+  [[ $again == "$geo" ]] || return 1
+  printf '%s' "$geo"
+}
+wait_card() {
+  for _ in $(seq 1 40); do card_up && card_geometry >/dev/null && return 0; sleep 0.25; done
+  die "the card did not come up on this run's overlay, or did not publish its geometry (writeCardGeometry); nothing was typed"
+}
+
+# --- run the scene -------------------------------------------------------------------
+shot() { # name
+  local raw="$tmp/$1.png" geo file="$out/$scene-$label.png"
+  [[ $1 != main ]] && file="$out/$scene-$1-$label.png"
+  sleep 0.3
+  geo=$(card_geometry) || die "the card did not publish its geometry (writeCardGeometry)"
+  # The overlay names the output it is on; the focused one is the fallback.
+  local output=${geo#* }; [[ $output == "$geo" ]] && output=""
+  geo=${geo%% *}
+  hyprctl monitors -j | jq -e --arg m "$output" '.[] | select(.name == $m)' >/dev/null 2>&1 || output=$monitor
+  grim -o "$output" "$raw"
+  # The card exactly, a few pixels of scrim around it, a solid label bar.
+  magick "$raw" -crop "$geo" +repage -bordercolor '#101315' -border 6 \
+    -gravity North -background '#101315' -splice 0x30 -fill '#e6e6e6' -pointsize 18 -annotate +0+6 "${label^^}" "$file"
+  echo "$file"
+}
+omarchy-shell shell toggle "$PLUGIN_ID" '{}' >/dev/null 2>&1; sleep 1.2
+wait_card
+card_up || die "the card did not open"
+while IFS= read -r line; do
+  [[ -z $line || $line == \#* || $line == "vault key" ]] && continue
+  verb=${line%% *}; arg=${line#* }
+  case $verb in
+    key)  clean; read -r -a words <<<"$arg"; wtype "${words[@]}"; sleep 0.5 ;;
+    text) clean; wtype "$arg"; sleep 0.5 ;;
+    pin)  # The card hides for the decrypt; its prompt is the only layer allowed.
+          for _ in $(seq 1 40); do [[ $(ns) == "$PIN" ]] && break; sleep 0.25; done
+          [[ $(ns) == "$PIN" ]] || die "no passphrase prompt appeared; nothing was typed"
+          sleep 0.7; [[ $(ns) == "$PIN" ]] || die "layers changed: $(ns)"
+          wtype capture; sleep 0.3; [[ $(ns) == "$PIN" ]] && wtype -k Return; sleep 1 ;;
+    wait) sleep "$arg" ;;
+    shot) clean; shot "$arg" ;;
+    *) die "unknown step: $line" ;;
+  esac
+done < "$SCENES/$scene"
