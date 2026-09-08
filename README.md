@@ -160,8 +160,9 @@ the setting. Needs Quickshell (`qs`), which Omarchy ships.
 `Alt+S` hands one entry to someone nearby over [LocalSend](https://localsend.org/),
 which Omarchy ships. It never leaves the machine in the clear: the entry
 (as the editor writes it) is encrypted with gpg into a file under
-`$XDG_RUNTIME_DIR`, either **for the recipient's key** (their fingerprint or
-e-mail; they need to have given you their public key) or, with the key
+`$XDG_RUNTIME_DIR`, either **for the recipient's key** (their fingerprint; they
+need to have given you their public key, and a name or e-mail is not
+accepted because it could match someone else's key) or, with the key
 field left empty, with a **one-time passphrase** the card shows for you to
 read out over another channel. `Enter` then opens LocalSend's device
 picker in a terminal; pick the device, and the file is removed when the

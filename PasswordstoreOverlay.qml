@@ -366,7 +366,8 @@ Item {
   function close() {
     root.opened = false
     if (root.mode === "edit") root.resetEditor()
-    if (root.mode === "share") root.leaveShare(true)
+    // dismiss() reaches here through shell.hide(); a send in flight keeps its file.
+    if (root.mode === "share" && !root.shareSending) root.leaveShare(true)
   }
 
   function dismiss() {
@@ -928,6 +929,8 @@ Item {
   property string shareError: ""
   property bool shareBusy: false
   property bool shareSending: false
+  property bool shareReading: false    // decrypting: the panel hides so pinentry can have the keyboard
+  property bool shareAbandoned: false  // left while encrypting: the file is discarded when it appears
   property string shareBuffer: ""
 
   function openShare(entry) {
@@ -942,17 +945,17 @@ Item {
     Qt.callLater(function() { recipientField.forceActiveFocus() })
   }
 
-  // Back to the search; a prepared but unsent file is removed.
+  // Back to the search; a prepared but unsent file is removed, and one
+  // still being made is removed when the helper reports it.
   function leaveShare(discard) {
-    if (discard && shareFile !== "") {
-      var command = [actionPath, "discard", "", "--file", shareFile]
-      Quickshell.execDetached(command)
-    }
+    if (discard && shareFile !== "") Quickshell.execDetached([actionPath, "discard", "", "--file", shareFile])
+    if (discard && shareBusy) shareAbandoned = true
     shareFile = ""
     sharePassphrase = ""
     shareEntry = ""
     shareError = ""
     shareBusy = false
+    shareReading = false
     shareSending = false
     recipientField.text = ""
     mode = "search"
@@ -961,10 +964,12 @@ Item {
 
   function prepareShare() {
     if (shareBusy || shareEntry === "") return
-    var to = recipientField.text.trim()
-    if (to.indexOf("-") === 0) { shareError = "That is not a key id"; return }
+    var to = recipientField.text.replace(/\s+/g, "")
+    if (to !== "" && !/^(0x)?[0-9A-Fa-f]{16,40}$/.test(to)) { shareError = "A fingerprint is 16 to 40 hex digits"; return }
     shareError = ""
     shareBusy = true
+    shareReading = true
+    shareAbandoned = false
     shareBuffer = ""
     var command = [actionPath, "share", shareEntry, "--quiet"]
     if (to !== "") command.push("--to", to)
@@ -974,17 +979,15 @@ Item {
   }
 
   function sendShare() {
-    if (shareFile === "") return
-    var command = [actionPath, "send", "", "--file", shareFile]
+    if (shareFile === "" || actionProcess.running) return
+    // The helper is started before the card goes, and shareSending keeps
+    // close() from discarding the file on the way out.
     shareSending = true
-    dismiss()
-    actionProcess.command = command
+    actionProcess.command = [actionPath, "send", "", "--file", shareFile]
     actionProcess.running = true
+    dismiss()
     shareFile = ""
-    sharePassphrase = ""
-    shareEntry = ""
-    shareSending = false
-    mode = "search"
+    leaveShare(false)
   }
 
   Process {
@@ -997,9 +1000,15 @@ Item {
       var text = root.shareBuffer
       root.shareBuffer = ""
       root.shareBusy = false
-      if (root.mode !== "share") return
+      root.shareReading = false
       var parsed = null
       try { parsed = JSON.parse(text) } catch (e) { parsed = null }
+      if (root.shareAbandoned || root.mode !== "share") {
+        // Left before the helper finished: the file it made goes.
+        root.shareAbandoned = false
+        if (parsed && parsed.file) Quickshell.execDetached([root.actionPath, "discard", "", "--file", String(parsed.file)])
+        return
+      }
       if (exitCode !== 0 || !parsed || !parsed.ok) {
         root.shareError = String(shareStderr.text || "").replace(/\s+/g, " ").trim() || "Could not prepare the entry"
         return
@@ -1938,12 +1947,12 @@ Item {
     // (gpg --full-generate-key, pkg add, first git/rclone push). Otherwise
     // the fullscreen layer eats keys and clicks meant for that terminal or
     // for whatever app is behind the scrim.
-    visible: root.opened && root.setupBusy === "" && !root.editReading
+    visible: root.opened && root.setupBusy === "" && !root.editReading && !root.shareReading
     anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
     WlrLayershell.namespace: "omarchy-passwordstore"
     WlrLayershell.layer: WlrLayer.Overlay
-    WlrLayershell.keyboardFocus: (root.opened && root.setupBusy === "" && !root.editReading)
+    WlrLayershell.keyboardFocus: (root.opened && root.setupBusy === "" && !root.editReading && !root.shareReading)
       ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
     exclusionMode: ExclusionMode.Ignore
 
@@ -2596,14 +2605,14 @@ Item {
 
         SetupText {
           visible: root.sharePassphrase === ""
-          text: "The entry is encrypted before it leaves this machine, and LocalSend carries the encrypted file. Give the recipient's GPG key (fingerprint or e-mail) to encrypt for them, or leave it empty for a one-time passphrase you read out to them over another channel."
+          text: "The entry is encrypted before it leaves this machine, and LocalSend carries the encrypted file. Give the recipient's GPG key fingerprint (not a name or e-mail, which could match someone else's key) to encrypt for them, or leave it empty for a one-time passphrase you read out to them over another channel."
           opacity: 0.7
         }
         EditLabel { visible: root.sharePassphrase === ""; text: "Recipient's key (optional)" }
         CardField {
           id: recipientField
           visible: root.sharePassphrase === ""
-          placeholderText: "0xDEADBEEF or someone@example.com"
+          placeholderText: "the recipient's key fingerprint, e.g. 9271 4414 6315 8686 7128 …"
           enabled: !root.shareBusy
           Keys.onPressed: function(event) { if (root.shareKey(event)) event.accepted = true }
         }
