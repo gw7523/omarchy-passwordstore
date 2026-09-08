@@ -155,6 +155,19 @@ socket in `$XDG_RUNTIME_DIR` and on to gpg-agent, never through argv or a
 file. `passwordstore-setup pinentry [--enable|--disable]` reports or changes
 the setting. Needs Quickshell (`qs`), which Omarchy ships.
 
+## Sharing an entry
+
+`Alt+S` hands one entry to someone nearby over [LocalSend](https://localsend.org/),
+which Omarchy ships. It never leaves the machine in the clear: the entry
+(as the editor writes it) is encrypted with gpg into a file under
+`$XDG_RUNTIME_DIR`, either **for the recipient's key** (their fingerprint or
+e-mail; they need to have given you their public key) or, with the key
+field left empty, with a **one-time passphrase** the card shows for you to
+read out over another channel. `Enter` then opens LocalSend's device
+picker in a terminal; pick the device, and the file is removed when the
+picker closes, sent or not. The recipient runs `gpg --decrypt` on what
+they received.
+
 ## Keys
 
 | Key                      | Action                                                   |
@@ -168,6 +181,7 @@ the setting. Needs Quickshell (`qs`), which Omarchy ships.
 | `Ctrl+Shift+Enter`       | Type the username                                        |
 | `Alt+E`                  | Edit the entry on the card; `Alt+Shift+E` opens it in a terminal with `pass edit` instead |
 | `Alt+N` / `Alt+G`        | Add an entry on the card (`Alt+G`: with a password already generated); the search text, if any, is the new entry's name |
+| `Alt+S`                  | Share the entry over LocalSend, encrypted (below)        |
 | `Tab` / `Shift+Tab`      | Next / previous vault                                    |
 | `F2` / `Ctrl+,`          | Setup: vaults, keys, sync                                |
 | `F5`                     | Re-read the store (it is also re-read every time it opens) |

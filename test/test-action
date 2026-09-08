@@ -198,6 +198,49 @@ reset
 [[ -z $(cat "$work/pass.store") ]] && ok "without --store pass resolves the store itself" \
   || bad "without --store pass resolves the store itself"
 
+# --- share ---------------------------------------------------------------------
+
+# gpg and localsend-cli stand-ins: gpg records its arguments and writes an
+# armored placeholder to --output; localsend-cli records the file it got.
+cat > "$work/bin/gpg" <<'SHIM'
+#!/bin/bash
+printf '%s\n' "$*" >> "$WORK/gpg.calls"
+out=""; while [[ $# -gt 0 ]]; do [[ $1 == --output ]] && out=$2; shift; done
+[[ -n $out ]] && printf -- '-----BEGIN PGP MESSAGE-----\nplaceholder\n-----END PGP MESSAGE-----\n' > "$out"
+cat > "$WORK/gpg.stdin"
+SHIM
+cat > "$work/bin/localsend-cli" <<'SHIM'
+#!/bin/bash
+printf '%s\n' "$*" >> "$WORK/localsend.calls"; cp "$2" "$WORK/sent.asc" 2>/dev/null
+SHIM
+chmod +x "$work/bin/gpg" "$work/bin/localsend-cli"
+printf '#!/bin/bash\nexec "$@"\n' > "$work/bin/term"; chmod +x "$work/bin/term"
+export PASSWORDSTORE_TERMINAL="$work/bin/term"
+export XDG_RUNTIME_DIR="$work/run"; mkdir -p "$work/run"
+reset; rm -f "$work/gpg.calls" "$work/gpg.stdin" "$work/localsend.calls" "$work/sent.asc"
+out=$("$ACTION" share web/site --quiet 2>/dev/null)
+[[ $(jq -r .ok <<<"$out") == true ]] && ok "share: ok" || bad "share: ok"
+pp=$(jq -r .passphrase <<<"$out")
+[[ $pp =~ ^([a-z0-9]{4}\ ){5}[a-z0-9]{4}$ ]] && ok "share: without --to a six-group passphrase is made" || bad "share: without --to a six-group passphrase is made"
+grep -q -- '--symmetric --cipher-algo AES256' "$work/gpg.calls" && ok "share: …and gpg encrypts symmetrically with AES-256" || bad "share: …and gpg encrypts symmetrically with AES-256"
+[[ $(sed -n 1p "$work/gpg.stdin") == "$pp" && $(sed -n 2p "$work/gpg.stdin") == hunter2 ]] \
+  && ok "share: the passphrase and the entry reach gpg on stdin, never argv" || bad "share: the passphrase and the entry reach gpg on stdin, never argv"
+grep -q "$pp" "$work/gpg.calls" && bad "share: the passphrase is not in gpg's argv" || ok "share: the passphrase is not in gpg's argv"
+f=$(jq -r .file <<<"$out"); [[ $f == "$work/run/omarchy-passwordstore/share/web-site.asc" && -f $f && $(stat -c %a "$f") == 600 ]] \
+  && ok "share: the file lives under the runtime dir, named after the entry, mode 600" || bad "share: the file lives under the runtime dir, named after the entry, mode 600 ($f)"
+"$ACTION" send "" --file "$f" >/dev/null 2>&1; sleep 0.5
+[[ -e $work/sent.asc ]] && grep -q 'BEGIN PGP MESSAGE' "$work/sent.asc" && ok "send: localsend-cli gets the encrypted file" || bad "send: localsend-cli gets the encrypted file"
+[[ ! -e $f ]] && ok "send: …and it is removed once the picker closes" || bad "send: …and it is removed once the picker closes"
+"$ACTION" send "" --file /etc/passwd >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "send refuses a file share did not make" || bad "send refuses a file share did not make"
+reset; rm -f "$work/gpg.calls" "$work/localsend.calls"
+out=$("$ACTION" share web/site --to 0xDEADBEEF --quiet 2>/dev/null)
+grep -q -- '--encrypt --recipient 0xDEADBEEF' "$work/gpg.calls" && [[ $(jq -r .passphrase <<<"$out") == "" ]] \
+  && ok "share --to encrypts to that key, no passphrase" || bad "share --to encrypts to that key, no passphrase"
+"$ACTION" share web/site --to -evil --quiet >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "share refuses a recipient that looks like an option" || bad "share refuses a recipient that looks like an option"
+rm -f "$work/bin/gpg"; unset XDG_RUNTIME_DIR
+
 # --- the editor: read / save / generate-password ------------------------------
 
 reset
