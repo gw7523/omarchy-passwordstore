@@ -204,6 +204,16 @@ count; a session that reached the third try, a cancelled one, and prompts
 the agent hands back unchecked (a symmetric decrypt, `GET_PASSPHRASE`)
 count as nothing.
 
+## Opening the card from a login page
+
+The card notes which window it was opened from and preselects the entry
+whose name appears in that window's title or app id: a browser tab titled
+"Sign in · GitHub" lands on `github.com/jack`, the header says `for
+chromium`. Type anything and the match is forgotten. `Alt+Enter` then types
+the username, `Tab`, the password and `Enter` into that window (wtype; the
+secret goes over its stdin). Add a `url:` to the entry and `Alt+L` opens
+it; the editor has a field for it.
+
 ## Sharing an entry
 
 `Alt+S` hands one entry to someone nearby over [LocalSend](https://localsend.org/),
@@ -222,10 +232,13 @@ they received.
 
 | Key                      | Action                                                   |
 |--------------------------|----------------------------------------------------------|
-| any printable            | Extend the search. `Backspace`, `Ctrl+Backspace`, `Ctrl+U` edit it; `Ctrl+V` / `Shift+Insert` paste into it |
+| any printable            | Extend the search. `Backspace`, `Ctrl+Backspace`, `Ctrl+U` edit it; `Ctrl+V` / `Shift+Insert` paste into it (a pasted URL searches by its host) |
 | `↑` `↓` `Ctrl+J/K/N/P`   | Move the cursor; `PageUp/Down`, `Home`, `End` jump       |
 | `Enter`                  | Copy the password; the clipboard clears after `clipTimeSec` and the history never sees it |
-| `Alt+U` / `Alt+Enter`    | Copy the username                                        |
+| `Alt+U`                  | Copy the username                                        |
+| `Alt+Enter`              | Autofill: type the username, `Tab`, the password and `Enter` into the window you came from (`autofillSubmit` off: no `Enter`) |
+| `→`                      | A menu of everything that can be done with the row, keys alongside |
+| `Alt+L`                  | Open the entry's `url:` in the browser                   |
 | `Alt+O`                  | Copy an OTP code (`pass otp`)                            |
 | `Ctrl+Enter`             | Type the password into the focused window                |
 | `Ctrl+Shift+Enter`       | Type the username                                        |
@@ -263,9 +276,10 @@ just `<name>`. Inside, the editor writes:
 ```
 <password>
 username: jack
+url: https://github.com/login        ← optional; Alt+L opens it
 created: 2026-09-06T10:12:00-04:00
 modified: 2026-09-06T10:12:00-04:00
-url: https://github.com          ← any other key: value line is kept as it was
+otpauth://totp/…                 ← any other line is kept as it was
 
 <notes, free text>
 ```
@@ -311,7 +325,8 @@ string, which both the card and the helper read back as the array.
 | `unlockLockoutSec` | `30`                       | The first lockout; each further one is four times longer, up to 30 min. |
 | `lockSessionOnLockout` | `false`                | Also lock the session (`omarchy-system-lock`) at the longest tier.     |
 | `lockoutNoLoopback` | `false`                   | Make gpg-agent refuse `--pinentry-mode loopback`, which bypasses the prompt and its count. Breaks tools that rely on loopback. |
-| `allowTyping`    | `true`                       | Enable `Ctrl+Enter` / `Ctrl+Shift+Enter` (needs `wtype`).               |
+| `allowTyping`    | `true`                       | Enable `Alt+Enter` autofill and `Ctrl+Enter` / `Ctrl+Shift+Enter` typing (needs `wtype`). |
+| `autofillSubmit` | `true`                       | Autofill ends with `Enter`. Off, it stops after the password.          |
 | `notifyOnCopy`   | `true`                       | Notify when something was copied, naming the entry and its username. Failures are always notified.         |
 
 A vault record:
@@ -337,7 +352,8 @@ hand:
 - `passwordstore-list [--store DIR] [--recent FILE]` prints the names of the
   `*.gpg` files in the store as JSON. It never decrypts anything.
 - `passwordstore-action <action> <entry> [...]` runs one action: `copy-password`,
-  `copy-username`, `copy-otp`, `type-password`, `type-username`, `read`
+  `copy-username`, `copy-otp`, `type-password`, `type-username`, `autofill`,
+  `open-url`, `read`
   (the entry as JSON, for the editor), `save` (JSON on stdin, written with
   `pass insert -m`), `delete` (`pass rm -f`), `generate-password` or `edit`
   (in a terminal). Secrets travel over pipes and stdin, never

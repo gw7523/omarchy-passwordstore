@@ -61,7 +61,12 @@ cat "$WORK/clipboard" 2>/dev/null
 SHIM
 cat > "$work/bin/wtype" <<'SHIM'
 #!/bin/bash
-cat > "$WORK/typed"
+# Records the key sequence: text from stdin, keys from -k, in order.
+if [[ ${1:-} == -k ]]; then printf '<%s>' "$2" >> "$WORK/typed"; else cat >> "$WORK/typed"; fi
+SHIM
+cat > "$work/bin/xdg-open" <<'SHIM'
+#!/bin/bash
+printf '%s\n' "$*" >> "$WORK/xdg-open.calls"
 SHIM
 cat > "$work/bin/notify-send" <<'SHIM'
 #!/bin/bash
@@ -75,7 +80,7 @@ failed=0
 ok()  { printf '  ok    %s\n' "$1"; passed=$(( passed + 1 )); }
 bad() { printf '  FAIL  %s\n' "$1"; failed=$(( failed + 1 )); }
 reset() {
-  rm -f "$work"/{pass.calls,clipboard,cleared,typed,notify.calls,recent,wlcopy.calls,inserted}
+  rm -f "$work"/{pass.calls,clipboard,cleared,typed,notify.calls,recent,wlcopy.calls,inserted,xdg-open.calls}
   # Omarchy's clipboard history, as if an older wl-copy had let the password in.
   printf '[{"type":"text","text":"keep me"},{"type":"text","text":"hunter2"},{"type":"image","path":"/tmp/x.png"}]\n' \
     > "$work/state/omarchy/clipboard-history.json"
@@ -172,6 +177,20 @@ reset
 "$ACTION" type-username web/site >/dev/null 2>&1
 [[ $(cat "$work/typed" 2>/dev/null) == "alice@example.com" ]] && ok "type-username types the username" \
   || bad "type-username types the username"
+
+reset
+"$ACTION" autofill web/site --quiet >/dev/null 2>&1
+[[ $(cat "$work/typed" 2>/dev/null) == "alice@example.com<Tab>hunter2<Return>" ]] && ok "autofill types username, Tab, password, Enter" \
+  || bad "autofill types username, Tab, password, Enter ($(cat "$work/typed" 2>/dev/null))"
+reset
+"$ACTION" autofill web/site --no-submit --quiet >/dev/null 2>&1
+[[ $(cat "$work/typed" 2>/dev/null) == "alice@example.com<Tab>hunter2" ]] && ok "autofill --no-submit leaves the Enter out" \
+  || bad "autofill --no-submit leaves the Enter out"
+reset
+"$ACTION" open-url web/site --quiet >/dev/null 2>&1
+[[ $(cat "$work/xdg-open.calls" 2>/dev/null) == "https://example.com" ]] && ok "open-url opens the url: line" || bad "open-url opens the url: line"
+reset
+"$ACTION" open-url site/bob --quiet >/dev/null 2>&1; [[ $? -eq 0 ]] && ok "open-url takes the url: of an editor-format entry" || bad "open-url takes the url: of an editor-format entry"
 
 reset
 "$ACTION" copy-password missing --quiet >/dev/null 2>&1
@@ -292,12 +311,12 @@ out=$("$ACTION" read site/bob 2>/dev/null)
   && ok "read: created and modified" || bad "read: created and modified"
 [[ $(jq -r '.notes' <<<"$out") == $'first note line\nsecond' ]] && ok "read: notes are everything after the blank line" \
   || bad "read: notes are everything after the blank line"
-[[ $(jq -c '.extra' <<<"$out") == '["url: https://example.com","otpauth://totp/x?secret=ABC"]' ]] \
-  && ok "read: other lines (url:, otpauth://) are kept in extra" || bad "read: other lines (url:, otpauth://) are kept in extra"
+[[ $(jq -r .url <<<"$out") == 'https://example.com' && $(jq -c '.extra' <<<"$out") == '["otpauth://totp/x?secret=ABC"]' ]] \
+  && ok "read: url: is a field, other lines (otpauth://) are kept in extra" || bad "read: url: is a field, other lines (otpauth://) are kept in extra"
 [[ ! -e $work/notify.calls ]] && ok "read notifies nothing" || bad "read notifies nothing"
 
 out=$("$ACTION" read web/site 2>/dev/null)
-[[ $(jq -r .username <<<"$out") == alice@example.com && $(jq -r .notes <<<"$out") == "" && $(jq -c .extra <<<"$out") == '["url: https://example.com"]' ]] \
+[[ $(jq -r .username <<<"$out") == alice@example.com && $(jq -r .notes <<<"$out") == "" && $(jq -r .url <<<"$out") == 'https://example.com' && $(jq -c .extra <<<"$out") == '[]' ]] \
   && ok "read: a classic entry gives its login: line as the username" || bad "read: a classic entry gives its login: line as the username"
 
 out=$("$ACTION" read crlf/one 2>/dev/null)
@@ -308,15 +327,15 @@ out=$("$ACTION" read missing 2>/dev/null); status=$?
 [[ $status -eq 1 && -z $out ]] && ok "read: a pass failure exits 1 with nothing on stdout" || bad "read: a pass failure exits 1 with nothing on stdout"
 
 reset
-out=$(printf '{"password":"n3w!","username":"bob","notes":"a\\nb","extra":["url: https://example.com"],"created":"2026-01-02T03:04:05+00:00"}' \
+out=$(printf '{"password":"n3w!","username":"bob","url":"https://example.com","notes":"a\\nb","extra":[],"created":"2026-01-02T03:04:05+00:00"}' \
   | "$ACTION" save site/bob --recent "$work/recent" 2>/dev/null)
 [[ $(jq -r .ok <<<"$out") == true ]] && ok "save exits with ok" || bad "save exits with ok"
 grep -qx 'insert -m -f site/bob' "$work/pass.calls" && ok "save writes with pass insert -m -f" || bad "save writes with pass insert -m -f"
 [[ $(sed -n 1p "$work/inserted") == 'n3w!' ]] && ok "save: password on line 1" || bad "save: password on line 1"
 [[ $(sed -n 2p "$work/inserted") == 'username: bob' ]] && ok "save: username: on line 2" || bad "save: username: on line 2"
-[[ $(sed -n 3p "$work/inserted") == 'created: 2026-01-02T03:04:05+00:00' ]] && ok "save keeps the created stamp" || bad "save keeps the created stamp"
+[[ $(sed -n 3p "$work/inserted") == 'url: https://example.com' ]] && ok "save: url: on line 3" || bad "save: url: on line 3"
+[[ $(sed -n 4p "$work/inserted") == 'created: 2026-01-02T03:04:05+00:00' ]] && ok "save keeps the created stamp" || bad "save keeps the created stamp"
 grep -q '^modified: 20[0-9][0-9]-' "$work/inserted" && ok "save sets modified to now" || bad "save sets modified to now"
-[[ $(sed -n 5p "$work/inserted") == 'url: https://example.com' ]] && ok "save writes the kept lines back" || bad "save writes the kept lines back"
 [[ $(sed -n '6,8p' "$work/inserted") == $'\na\nb' ]] && ok "save: a blank line, then the notes" || bad "save: a blank line, then the notes"
 grep -q 'mv' "$work/pass.calls" && bad "save without --from does not move anything" || ok "save without --from does not move anything"
 [[ $(cat "$work/recent") == site/bob ]] && ok "save records the entry as recent" || bad "save records the entry as recent"
