@@ -124,12 +124,14 @@ file ever leaving the room: on the new seat, Keys page, highlight its key
 and press `S` (`Send key to a seat`); the public key goes to LocalSend's
 device picker. On the seat that holds the vault, `A` (`Add a seat's key`)
 imports the received file (LocalSend saves to `~/Downloads`; the import
-page finds it), shows its fingerprint, and selects it next to the store's
-keys; read the two fingerprints against each other, group by group, one
-screen to the other, then `Next` and `R` re-encrypts every entry for
-both. A git vault pushes right away; the new seat clones or pulls it and
-its key reads everything. Only public keys travel; a private key is never
-sent this way.
+page offers the newest key there) and shows its name and fingerprint.
+Read the fingerprint against the other seat's screen, group by group;
+`M` says they match, and only then is the key selected next to the
+store's own; `Enter` on the Keys page re-encrypts every entry for all of
+them. A git vault pushes right after and says so; the new seat clones or
+pulls it and its key reads everything. A file holding more than one key
+is refused, only public keys travel, and `Esc` at any point drops the
+join.
 
 ### Sync backends
 
