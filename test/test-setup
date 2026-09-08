@@ -486,7 +486,7 @@ if [[ $1 == show ]]; then f="$PASSWORD_STORE_DIR/fix/${2//\//-}"; [[ -f $f ]] &&
 SHIM
 chmod +x "$work/bin/pass"
 out=$("$SETUP" audit --store "$h")
-check "audit: counts the entries it read" '.checked == 5 and .hibp == false' "$out"
+check "audit: counts the entries it read" '.checked == 5 and .failed == 0 and .total == 5 and .hibp == false' "$out"
 check "audit: a password used twice is one reused finding naming both" '[.findings[] | select(.kind == "reused")] | length == 1 and (.[0].entries | sort) == ["web/a", "web/b"]' "$out"
 check "audit: a short password is reported with its length" '[.findings[] | select(.kind == "short")] | length == 1 and .[0].entries == ["web/short"] and (.[0].detail | test("3 characters"))' "$out"
 check "audit: an old modified stamp is reported in days" '[.findings[] | select(.kind == "old")] | length == 1 and .[0].entries == ["web/old"] and (.[0].detail | test("days old"))' "$out"
@@ -505,6 +505,14 @@ check "audit --hibp: a breached password is reported with its count" '[.findings
 grep -q "range/${sha:0:5}" "$work/curl.calls" && ! grep -q "${sha:5}" "$work/curl.calls" && ok "audit --hibp: only the five-character prefix is sent" \
   || bad "audit --hibp: only the five-character prefix is sent"
 rm -f "$work/bin/curl"
+printf '#!/bin/bash\necho "curl: (22) The requested URL returned error: 429" >&2; exit 22\n' > "$work/bin/curl"; chmod +x "$work/bin/curl"
+out=$("$SETUP" audit --store "$h" --hibp)
+check "audit --hibp: a failed query is reported, not taken as clean" '.hibp == false and (.hibpError | test("did not answer")) and ([.findings[] | select(.kind == "pwned")] | length == 0)' "$out"
+rm -f "$work/bin/curl"
+: > "$h/web/unreadable.gpg"
+out=$("$SETUP" audit --store "$h")
+check "audit: an entry pass cannot show is counted as failed, not skipped silently" '.failed == 1 and .checked == 5 and .total == 6' "$out"
+rm -f "$h/web/unreadable.gpg"
 
 # --- pinentry ---------------------------------------------------------------
 

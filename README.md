@@ -144,7 +144,8 @@ seconds it has left; `Copy` puts it on the clipboard like `Alt+O` does.
 An entry without one offers `Scan QR`, which hides the card, lets you
 draw a box around the code on screen (`slurp`, `grim`, `zbarimg`) and
 stores what it read, or a field to paste the secret. Both save the entry
-at once; `Remove` drops the line. Needs `pass-otp` for the codes, which
+at once (so they ask you to save other edits first); `Remove` drops the
+line; `Copy` keeps the card open. Codes are TOTP only. Needs `pass-otp` for the codes, which
 the Dependencies page installs.
 
 ## Moving a key to another seat

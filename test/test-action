@@ -14,7 +14,8 @@ readonly ACTION="$PLUGIN_DIR/passwordstore-action"
 
 work=$(mktemp -d) || exit 1
 trap 'rm -rf "$work"' EXIT
-mkdir -p "$work/bin" "$work/state/omarchy"
+mkdir -p "$work/bin" "$work/state/omarchy" "$work/store/.extensions"; : > "$work/store/.extensions/otp.bash"
+export PASSWORD_STORE_SYSTEM_EXTENSION_DIR="$work/store/.extensions"
 export WORK="$work"
 export XDG_STATE_HOME="$work/state"
 export PASSWORDSTORE_CLIPBOARD_HISTORY="$work/state/omarchy/clipboard-history.json"
@@ -37,6 +38,7 @@ case $1 in
     case "$2" in
       site/bob) printf 'p4ss w0rd!\nusername: bob\ncreated: 2026-01-02T03:04:05+00:00\nmodified: 2026-02-03T04:05:06+00:00\nurl: https://example.com\notpauth://totp/x?secret=ABC\n\nfirst note line\nsecond\n' ;;
       crlf/one) printf 'p4ss\r\nusername: carol\r\n\r\nhello\r\n' ;;
+      otpnotes/one) printf 'x\nusername: o\n\nkeep this: otpauth://totp/old?secret=OLD\notpauth://totp/old?secret=OLD\n' ;;
       ctl/one) printf 'bad\tpass\nusername: dan\n' ;;
       ctlname/one) printf 'goodpass\nusername: d\x1ban\n' ;;
       urls/crlfnotes) printf 'x\r\nusername: e\r\n\r\nurl: https://evil.example\r\n' ;;
@@ -268,12 +270,43 @@ out=$("$ACTION" read site/bob 2>/dev/null)
 out=$("$ACTION" read web/site 2>/dev/null)
 [[ $(jq -r .otp <<<"$out") == false ]] && ok "read reports no OTP when there is none" || bad "read reports no OTP when there is none"
 reset
+PASSWORD_STORE_SYSTEM_EXTENSION_DIR="$work/nowhere" "$ACTION" otp-code site/bob >/dev/null 2>"$work/otp.err"; status=$?
+[[ $status -eq 1 && ! -e $work/notify.calls ]] && grep -q 'pass-otp is not installed' "$work/otp.err" && ok "otp-code without pass-otp exits 1 on stderr, no notification" \
+  || bad "otp-code without pass-otp exits 1 on stderr, no notification"
+reset
+printf '{"password":"n3w!","username":"bob","url":"","otp":true,"notes":"","extra":[],"created":""}' | "$ACTION" save site/bob --quiet >/dev/null 2>&1
+grep -q '^otpauth://totp/x?secret=ABC$' "$work/inserted" && ok "save keeps the otpauth line from disk when the editor says the entry has one" \
+  || bad "save keeps the otpauth line from disk when the editor says the entry has one"
+[[ $(grep -c '' "$work/inserted") -eq 5 && $(tail -n1 "$work/inserted") == 'otpauth://totp/x?secret=ABC' ]] && ok "save: the otpauth line sits in the metadata block, once" || bad "save: the otpauth line sits in the metadata block, once ($(cat "$work/inserted" | tr '\n' '|'))"
+reset
+printf '{"password":"n3w!","username":"bob","otp":false}' | "$ACTION" save site/bob --quiet >/dev/null 2>&1
+grep -q otpauth "$work/inserted" && bad "save drops the otpauth line when the editor removed it" || ok "save drops the otpauth line when the editor removed it"
+reset
 printf '{"secret":"jbsw y3dp ehpk 3pxp","issuer":"Example","digits":6,"period":30}' | "$ACTION" otp-set site/bob --quiet >/dev/null 2>&1
 grep -q '^otpauth://totp/site%2Fbob?secret=JBSWY3DPEHPK3PXP&issuer=Example$' "$work/inserted" && ok "otp-set: builds the URI from a spaced lower-case secret" \
   || bad "otp-set: builds the URI from a spaced lower-case secret ($(grep otpauth "$work/inserted"))"
 [[ $(grep -c '^otpauth://' "$work/inserted") -eq 1 && $(sed -n 1p "$work/inserted") == 'p4ss w0rd!' && $(tail -n1 "$work/inserted") == second ]] \
   && ok "otp-set: replaces the old otpauth line, keeps password and notes" || bad "otp-set: replaces the old otpauth line, keeps password and notes"
 grep -q 'JBSWY3DPEHPK3PXP' "$work/pass.calls" && bad "otp-set: the secret is not on pass's argv" || ok "otp-set: the secret is not on pass's argv"
+grep -q 'awk -v' "$ACTION" && bad "otp_store: no awk -v (the URI would be on argv)" || ok "otp_store: no awk -v (the URI would be on argv)"
+reset
+printf '{"secret":"JBSWY3DPEHPK3PXP"}' | "$ACTION" otp-set crlf/one --quiet >/dev/null 2>&1
+[[ $(sed -n 1p "$work/inserted") == p4ss && $(sed -n 2p "$work/inserted") == 'username: carol' && $(sed -n 3p "$work/inserted") == otpauth://* && $(sed -n 4p "$work/inserted") == "" && $(sed -n 5p "$work/inserted") == hello ]] \
+  && ok "otp-set on a CRLF entry: CR stripped, URI in the metadata block, notes kept" || bad "otp-set on a CRLF entry: CR stripped, URI in the metadata block, notes kept ($(tr '\n' '|' < "$work/inserted"))"
+reset
+printf '{"secret":"JBSWY3DPEHPK3PXP"}' | "$ACTION" otp-set web/site --quiet >/dev/null 2>&1
+[[ $(sed -n 4p "$work/inserted") == otpauth://* && $(grep -c '' "$work/inserted") -eq 4 ]] && ok "otp-set on a classic entry without a blank line appends to the metadata" \
+  || bad "otp-set on a classic entry without a blank line appends to the metadata ($(tr '\n' '|' < "$work/inserted"))"
+reset
+printf '{"secret":"JBSWY3DPEHPK3PXP"}' | "$ACTION" otp-set otpnotes/one --quiet >/dev/null 2>&1
+[[ $(grep -c '^otpauth://' "$work/inserted") -eq 2 && $(tail -n1 "$work/inserted") == 'otpauth://totp/old?secret=OLD' ]] \
+  && ok "otp-set leaves an otpauth line inside the notes alone" || bad "otp-set leaves an otpauth line inside the notes alone"
+reset
+printf '{"secret":"JBSWY3DPE"}' | "$ACTION" otp-set site/bob --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/inserted ]] && ok "otp-set refuses a base32 secret that is not whole groups of 8" || bad "otp-set refuses a base32 secret that is not whole groups of 8"
+reset
+printf '{"secret":"JBSWY3DPEHPK3PXP","period":0}' | "$ACTION" otp-set site/bob --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/inserted ]] && ok "otp-set refuses a period of 0" || bad "otp-set refuses a period of 0"
 reset
 printf '{"secret":"not base32!"}' | "$ACTION" otp-set site/bob --quiet >/dev/null 2>&1
 [[ $? -eq 1 && ! -e $work/inserted ]] && ok "otp-set refuses a secret that is not base32" || bad "otp-set refuses a secret that is not base32"
@@ -301,6 +334,10 @@ printf '#!/bin/bash\ncat >/dev/null; echo "https://not-an-otp.example"\n' > "$wo
 reset
 "$ACTION" otp-scan site/bob --quiet >/dev/null 2>&1
 [[ $? -eq 1 && ! -e $work/inserted ]] && ok "otp-scan refuses a QR that is not otpauth://" || bad "otp-scan refuses a QR that is not otpauth://"
+printf '#!/bin/bash\ncat >/dev/null; echo "otpauth://hotp/x?secret=JBSWY3DPEHPK3PXP&counter=1"\n' > "$work/bin/zbarimg"
+reset
+"$ACTION" otp-scan site/bob --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/inserted ]] && ok "otp-scan refuses a counter-based (hotp) code" || bad "otp-scan refuses a counter-based (hotp) code"
 rm -f "$work/bin/slurp" "$work/bin/grim" "$work/bin/zbarimg"
 
 reset
@@ -422,8 +459,8 @@ out=$("$ACTION" read site/bob 2>/dev/null)
   && ok "read: created and modified" || bad "read: created and modified"
 [[ $(jq -r '.notes' <<<"$out") == $'first note line\nsecond' ]] && ok "read: notes are everything after the blank line" \
   || bad "read: notes are everything after the blank line"
-[[ $(jq -r .url <<<"$out") == 'https://example.com' && $(jq -c '.extra' <<<"$out") == '["otpauth://totp/x?secret=ABC"]' ]] \
-  && ok "read: url: is a field, other lines (otpauth://) are kept in extra" || bad "read: url: is a field, other lines (otpauth://) are kept in extra"
+[[ $(jq -r .url <<<"$out") == 'https://example.com' && $(jq -c '.extra' <<<"$out") == '[]' && $(jq -r .otp <<<"$out") == true ]] \
+  && ok "read: url: is a field; the otpauth line is reported as otp, never sent" || bad "read: url: is a field; the otpauth line is reported as otp, never sent"
 [[ ! -e $work/notify.calls ]] && ok "read notifies nothing" || bad "read notifies nothing"
 
 out=$("$ACTION" read web/site 2>/dev/null)
