@@ -292,6 +292,15 @@ Item {
     activateVault(next)
   }
 
+  // Make ID the active vault without touching the search (the Health
+  // page opening a finding in another vault): the listing is re-read,
+  // the filter and cursor stay.
+  function adoptVault(id) {
+    if (vaultById(id) === null || id === activeVaultId) return
+    var error = saveSetting("activeVaultId", id)
+    if (error !== "") activeOverride = id
+    refresh()
+  }
   function activateVault(id) {
     if (vaultById(id) === null) return
     var error = saveSetting("activeVaultId", id)
@@ -801,6 +810,178 @@ Item {
   property string editModified: ""
   property var editExtra: []
   property string editUrl: ""
+  // One-time codes: read reports whether the entry has an otpauth:// line;
+  // the code itself comes from pass otp through the helper, refreshed when
+  // the period runs out. Scan (slurp needs the pointer) hides the card.
+  property bool editOtp: false
+  property int editOtpPeriod: 30
+  property var editLoaded: ({})        // the fields as read, to know when there are unsaved edits
+  readonly property bool editDirty: (
+    passwordField.text !== String(editLoaded.password || "") || notesArea.text !== String(editLoaded.notes || "")
+    || urlField.text !== String(editLoaded.url || "") || usernameField.text !== String(editLoaded.username || "")
+    || nameField.text !== String(editLoaded.title || ""))
+  property bool otpBusy: false          // set / remove: the card hides while pass re-encrypts (pinentry may ask)
+  property string otpCode: ""
+  property int otpRemaining: 0
+  property bool otpScanning: false
+  property string otpBuffer: ""
+  property string otpSetPayload: ""
+  // editOtp says the entry has a code on disk (save keeps it); otpArmed
+  // says the countdown is asking for it. A failed fetch stops the asking,
+  // never the keeping.
+  property bool otpArmed: false
+  property string otpFor: ""            // the entry the running otp-code is about
+  Timer {
+    interval: 1000
+    repeat: true
+    running: root.opened && root.mode === "edit" && root.otpArmed
+    onTriggered: {
+      if (root.otpRemaining > 1) root.otpRemaining -= 1
+      else root.fetchOtp()
+    }
+  }
+  function fetchOtp() {
+    if (otpProcess.running || editEntry === "" || !otpArmed) return
+    otpBuffer = ""
+    otpFor = editEntry
+    var command = [actionPath, "otp-code", editEntry]
+    if (storeDir !== "") command.push("--store", storeDir)
+    otpProcess.command = command
+    otpProcess.running = true
+  }
+  Process {
+    id: otpProcess
+    running: false
+    command: []
+    stdout: SplitParser { splitMarker: ""; onRead: function(data) { root.otpBuffer += data } }
+    stderr: StdioCollector { id: otpStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      var text = root.otpBuffer
+      root.otpBuffer = ""
+      if (root.mode !== "edit" || root.editEntry !== root.otpFor) return
+      var parsed = null
+      try { parsed = JSON.parse(text) } catch (e) { parsed = null }
+      if (exitCode !== 0 || !parsed) {
+        // No countdown means no more asking; the error stays on the page.
+        root.otpCode = ""; root.otpRemaining = 0; root.otpArmed = false
+        root.editError = String(otpStderr.text || "").replace(/\s+/g, " ").trim() || "Could not read the code"
+        return
+      }
+      root.otpCode = String(parsed.code || "")
+      root.otpRemaining = Math.max(1, Number(parsed.remaining) || 0)
+      root.editOtpPeriod = Math.max(1, Number(parsed.period) || 30)
+    }
+  }
+  // Set from a secret typed in (JSON on stdin), scan a QR code from the
+  // screen, or remove: each re-encrypts the entry at once and re-reads it.
+  // Copy the code without leaving the editor (runAction would dismiss).
+  function otpCopy() {
+    if (editEntry === "" || otpCopyProcess.running) return
+    var command = [actionPath, "copy-otp", editEntry, "--clip-time", String(clipTimeSec)]
+    if (storeDir !== "") command.push("--store", storeDir)
+    if (!notifyOnCopy) command.push("--quiet")
+    editError = ""
+    otpCopyProcess.command = command
+    otpCopyProcess.running = true
+  }
+  Process {
+    id: otpCopyProcess
+    running: false
+    command: []
+    stderr: StdioCollector { id: otpCopyStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (exitCode === 0 || root.mode !== "edit") return
+      root.editError = String(otpCopyStderr.text || "").replace(/\s+/g, " ").trim() || "Could not copy the code"
+    }
+  }
+
+  function otpSet() {
+    var secret = otpSecretField.text.trim()
+    if (secret === "" || editEntry === "" || otpSetProcess.running) return
+    if (editDirty) { editError = "Save your other changes first; setting a code rewrites the entry"; return }
+    otpBusy = true
+    otpSetPayload = JSON.stringify({ secret: secret, issuer: nameField.text.trim() })
+    otpSecretField.text = ""
+    var command = [actionPath, "otp-set", editEntry, "--quiet"]
+    if (storeDir !== "") command.push("--store", storeDir)
+    if (syncActive) command.push("--sync", "--vault", activeVaultId)
+    otpSetProcess.command = command
+    otpSetProcess.stdinEnabled = true
+    otpSetProcess.running = true
+  }
+  Process {
+    id: otpSetProcess
+    running: false
+    command: []
+    stdinEnabled: true
+    stderr: StdioCollector { id: otpSetStderr; waitForEnd: true }
+    onStarted: { otpSetProcess.write(root.otpSetPayload + "\n"); root.otpSetPayload = ""; otpSetProcess.stdinEnabled = false }
+    onExited: function(exitCode) {
+      root.otpSetPayload = ""
+      root.otpBusy = false
+      if (root.mode !== "edit") return
+      if (exitCode !== 0) root.editError = String(otpSetStderr.text || "").replace(/\s+/g, " ").trim() || "Could not set the code"
+      else root.reloadEntry()
+      Qt.callLater(function() { passwordField.forceActiveFocus() })
+    }
+  }
+  function otpScan() {
+    if (editEntry === "" || otpScanProcess.running) return
+    if (editDirty) { editError = "Save your other changes first; a scanned code rewrites the entry"; return }
+    otpScanning = true
+    var command = [actionPath, "otp-scan", editEntry, "--quiet"]
+    if (storeDir !== "") command.push("--store", storeDir)
+    if (syncActive) command.push("--sync", "--vault", activeVaultId)
+    otpScanProcess.command = command
+    otpScanProcess.running = true
+  }
+  Process {
+    id: otpScanProcess
+    running: false
+    command: []
+    stderr: StdioCollector { id: otpScanStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      root.otpScanning = false
+      if (root.mode !== "edit") return
+      if (exitCode !== 0) root.editError = String(otpScanStderr.text || "").replace(/\s+/g, " ").trim() || "No code was read"
+      else root.reloadEntry()
+      Qt.callLater(function() { (root.editOtp ? passwordField : otpSecretField).forceActiveFocus() })
+    }
+  }
+  function otpRemove() {
+    if (editEntry === "" || otpRemoveProcess.running) return
+    if (editDirty) { editError = "Save your other changes first; removing the code rewrites the entry"; return }
+    otpBusy = true
+    var command = [actionPath, "otp-remove", editEntry, "--quiet"]
+    if (storeDir !== "") command.push("--store", storeDir)
+    if (syncActive) command.push("--sync", "--vault", activeVaultId)
+    otpRemoveProcess.command = command
+    otpRemoveProcess.running = true
+  }
+  Process {
+    id: otpRemoveProcess
+    running: false
+    command: []
+    stderr: StdioCollector { id: otpRemoveStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      root.otpBusy = false
+      if (root.mode !== "edit") return
+      if (exitCode !== 0) root.editError = String(otpRemoveStderr.text || "").replace(/\s+/g, " ").trim() || "Could not remove the code"
+      else root.reloadEntry()
+      Qt.callLater(function() { passwordField.forceActiveFocus() })
+    }
+  }
+  // Re-read the entry after an OTP change (which saved it): the fields
+  // show what is on disk again.
+  function reloadEntry() {
+    if (editEntry === "") return
+    editReading = true
+    readBuffer = ""
+    var command = [actionPath, "read", editEntry, "--username-keys", usernameKeys]
+    if (storeDir !== "") command.push("--store", storeDir)
+    readProcess.command = command
+    readProcess.running = true
+  }
   property bool editRevealed: false
   property bool editReading: false     // decrypting: the card hides so pinentry can have the keyboard
   // The name and username as read, so an unchanged entry is saved under
@@ -888,6 +1069,9 @@ Item {
     passwordField.text = ""
     notesArea.text = ""
     urlField.text = ""
+    otpSecretField.text = ""
+    editOtp = false
+    otpCode = ""
     if (entry) {
       editReading = true
       readBuffer = ""
@@ -907,6 +1091,15 @@ Item {
     passwordField.text = ""
     notesArea.text = ""
     urlField.text = ""
+    otpSecretField.text = ""
+    editOtp = false
+    otpArmed = false
+    otpProcess.running = false
+    otpFor = ""
+    editLoaded = {}
+    healthReturn = false
+    otpCode = ""
+    otpRemaining = 0
     nameField.text = ""
     usernameField.text = ""
     readBuffer = ""
@@ -951,6 +1144,12 @@ Item {
   function leaveEditor() {
     if (editReading) return
     resetEditor()
+    if (healthReturn) {
+      healthReturn = false
+      mode = "setup"
+      goToStep(6)
+      return
+    }
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
@@ -976,6 +1175,13 @@ Item {
     }
     notesArea.text = String(parsed.notes || "")
     urlField.text = String(parsed.url || "")
+    editLoaded = { password: passwordField.text, notes: notesArea.text, url: urlField.text, username: usernameField.text, title: nameField.text }
+    editOtp = !!parsed.otp
+    otpArmed = editOtp
+    editOtpPeriod = Math.max(1, Number(parsed.otpPeriod) || 30)
+    otpCode = ""
+    otpRemaining = 0
+    if (editOtp) fetchOtp()
     editCreated = String(parsed.created || "")
     editModified = String(parsed.modified || "")
     editExtra = Array.isArray(parsed.extra) ? parsed.extra.map(function(l) { return String(l) }) : []
@@ -1051,6 +1257,7 @@ Item {
       password: passwordField.text,
       username: user,
       url: url,
+      otp: editOtp,
       notes: notesArea.text,
       extra: editExtra,
       created: editCreated
@@ -1302,6 +1509,18 @@ Item {
 
   function handleSetupResult(op, parsed) {
     if (op === "lockout-policy") return
+    if (op === "audit") {
+      if (parsed && parsed.findings) {
+        healthFindings = parsed.findings
+        healthChecked = Number(parsed.checked) || 0
+        healthFailed = Number(parsed.failed) || 0
+        healthHibpError = parsed.hibpError ? String(parsed.hibpError) : ""
+        setupNote = ""
+        setupError = ""
+        if (healthFailed > 0 || healthHibpError !== "") setupError = healthShortfall
+      } else setupError = String((parsed && parsed.error) || "The check did not run")
+      return
+    }
     if (op === "pinentry") {
       if (parsed && parsed.ok) {
         setupNote = parsed.pinentry === "omarchy" ? "gpg-agent now asks with Omarchy's prompt." : "gpg-agent is back on its default prompt."
@@ -1458,7 +1677,54 @@ Item {
 
   // 0 vaults (hub) · 1 vault · 2 dependencies · 3 GPG keys · 4 init · 5 sync
   property int setupStep: 0
-  readonly property var stepTitles: ["Vaults", "Vault", "Dependencies", "GPG keys", "Password store", "Sync"]
+  readonly property var stepTitles: ["Vaults", "Vault", "Dependencies", "GPG keys", "Password store", "Sync", "Health"]
+  readonly property bool healthHibp: boolSetting("healthHibp", false)
+  property var healthFindings: []
+  property int healthChecked: -1
+  property int healthIndex: 0
+  function openHealthEntry(index) {
+    if (index < 0 || index >= healthRows.length) return
+    var name = healthRows[index].entry
+    if (!name) return
+    // The findings are the draft vault's; the editor works on the active one.
+    if (healthVaultId !== "" && healthVaultId !== activeVaultId) adoptVault(healthVaultId)
+    healthReturn = true
+    mode = "search"
+    openEditor({ name: name })
+  }
+  function runHealth() {
+    healthFindings = []
+    healthChecked = -1
+    healthFailed = 0
+    healthHibpError = ""
+    healthIndex = 0
+    healthVaultId = draft.id
+    runSetup("audit", healthHibp ? ["--hibp"] : [], "Reading every entry of " + draft.name + " (pinentry may ask)…", draft)
+  }
+  property string healthVaultId: ""     // whose store the findings are about
+  property int healthFailed: 0          // entries the audit could not read
+  property string healthHibpError: ""   // why the breach check did not run
+  // What the last check could not cover; shown with the findings, so it
+  // does not vanish with the page's transient error line.
+  readonly property string healthShortfall:
+    (healthFailed > 0 ? healthFailed + " entries could not be read (a cancelled prompt, a missing key); they were not checked. " : "")
+    + (healthHibpError !== "" ? healthHibpError + " No breach check was made." : "")
+  property bool healthReturn: false     // the editor was opened from a finding: Esc comes back here
+  readonly property var healthRows: {
+    // One row per entry, so every one of a reused group can be opened.
+    var out = []
+    var glyph = { reused: String.fromCodePoint(0xF0453), short: String.fromCodePoint(0xF0092), old: clockGlyph, empty: String.fromCodePoint(0xF0131), pwned: String.fromCodePoint(0xF0029) }
+    for (var i = 0; i < healthFindings.length; i++) {
+      var f = healthFindings[i]
+      var entries = f.entries || []
+      for (var j = 0; j < entries.length; j++) {
+        var others = entries.filter(function(e) { return e !== entries[j] })
+        out.push({ lead: glyph[f.kind] || keyGlyph, title: String(entries[j]), kind: String(f.kind), entry: String(entries[j]),
+                   subtitle: String(f.detail || "") + (others.length > 0 ? "  ·  same as " + others.slice(0, 3).join(", ") + (others.length > 3 ? " +" + (others.length - 3) : "") : "") })
+      }
+    }
+    return out
+  }
 
   // The vault being added or edited. Its sync fields live in the text
   // fields and toggles below until Apply writes them back.
@@ -1671,6 +1937,7 @@ Item {
 
   function setupBack() {
     if (setupBusy !== "") return
+    if (setupStep === 6) { goToStep(0); return }
     if (setupStep === 3 && gpgImporting) { gpgImporting = false; gpgImportKind = ""; importInspect = {}; focusSetupPage(); return }
     if (setupStep === 3 && gpgExporting) { gpgExporting = false; gpgExportKind = ""; focusSetupPage(); return }
     if (setupStep === 1) { if (vaultsOnRecord || storeUsable) goToStep(0); return }
@@ -1708,6 +1975,9 @@ Item {
       case 2:
         if (depSelected.length > 0) installSelected()
         else if (!requiredDepsMissing) goToStep(3)
+        break
+      case 6:
+        if (healthRows.length > 0) openHealthEntry(healthIndex); else runHealth()
         break
       case 3:
         if (gpgImporting) { importKey(); break }
@@ -1953,6 +2223,7 @@ Item {
     if (setupStep === 0) {
       var row = vaultIndex >= 0 && vaultIndex < vaultRows.length ? vaultRows[vaultIndex] : null
       if (letter === "a") { newDraft(); goToStep(1); return true }
+      if (letter === "h" && row && row.kind === "vault") { beginDraft(row.vault, false); goToStep(6); runHealth(); return true }
       if (letter === "d" && row && row.kind === "vault") { makeActive(row.vault.id); return true }
       if (letter === "x" && row && row.kind === "vault" && !row.vault.legacy) {
         removeConfirm = row.vault.id
@@ -1978,6 +2249,8 @@ Item {
       setupRcloneMode = setupRcloneMode === "copy" ? "sync" : "copy"; return true
     }
     if (setupStep === 5 && letter >= "1" && letter <= "4") { chooseBackend(parseInt(letter, 10) - 1); return true }
+    if (setupStep === 6 && letter === "r") { runHealth(); return true }
+    if (setupStep === 6 && letter === "b") { saveSetting("healthHibp", !healthHibp); return true }
     return false
   }
 
@@ -1986,6 +2259,7 @@ Item {
     else if (setupStep === 2) depIndex = Math.max(0, Math.min(depRows.length - 1, depIndex + delta))
     else if (setupStep === 3 && !gpgImporting && !gpgExporting) gpgIndex = Math.max(0, Math.min(gpgKeys.length - 1, gpgIndex + delta))
     else if (setupStep === 5) chooseBackend(syncIndex + delta)
+    else if (setupStep === 6) healthIndex = Math.max(0, Math.min(healthRows.length - 1, healthIndex + delta))
   }
 
   function togglePull() {
@@ -2004,6 +2278,7 @@ Item {
         ? (gpgImportKind === "public" ? "Import public key" : "Import private key")
         : (gpgExporting ? (gpgExportKind === "public" ? "Export public key" : "Export private key") : "Use selected")
       case 4: return storeExists ? "Next" : "Create store"
+      case 6: return healthRows.length > 0 ? "Open entry" : "Check again"
       default: return syncConfirm !== "" ? "Yes, upload" : "Apply"
     }
   }
@@ -2015,7 +2290,8 @@ Item {
 
   readonly property string setupHint: {
     switch (setupStep) {
-      case 0: return "↑↓ choose  ·  Enter edit  ·  A add  ·  D make active  ·  X forget"
+      case 0: return "↑↓ choose  ·  Enter edit  ·  A add  ·  D make active  ·  H health check  ·  X forget"
+      case 6: return "↑↓ move  ·  Enter open the entry  ·  R check again  ·  B breach check " + (healthHibp ? "on" : "off") + "  ·  Esc vaults"
       case 1: return "Tab between fields  ·  Enter next"
       case 2: return "Space select  ·  Enter install  ·  S skip"
       case 3: return gpgImporting
@@ -2185,12 +2461,12 @@ Item {
     // (gpg --full-generate-key, pkg add, first git/rclone push). Otherwise
     // the fullscreen layer eats keys and clicks meant for that terminal or
     // for whatever app is behind the scrim.
-    visible: root.opened && root.setupBusy === "" && !root.editReading && !root.shareReading
+    visible: root.opened && root.setupBusy === "" && !root.editReading && !root.shareReading && !root.otpScanning && !root.otpBusy
     anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
     WlrLayershell.namespace: "omarchy-passwordstore"
     WlrLayershell.layer: WlrLayer.Overlay
-    WlrLayershell.keyboardFocus: (root.opened && root.setupBusy === "" && !root.editReading && !root.shareReading)
+    WlrLayershell.keyboardFocus: (root.opened && root.setupBusy === "" && !root.editReading && !root.shareReading && !root.otpScanning && !root.otpBusy)
       ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
     exclusionMode: ExclusionMode.Ignore
 
@@ -2640,7 +2916,7 @@ Item {
             }
             // Tab skips the generator controls (they are mouse and Alt+G
             // territory) and lands in the notes.
-            KeyNavigation.tab: notesArea
+            KeyNavigation.tab: root.editOtp || root.editEntry === "" ? notesArea : otpSecretField
             KeyNavigation.backtab: urlField
             onAccepted: notesArea.forceActiveFocus()
           }
@@ -2723,6 +2999,75 @@ Item {
             opacity: root.genSymbols ? 1 : 0.5
             onClicked: root.genSymbols = !root.genSymbols
           }
+        }
+
+        EditLabel { text: "One-time code" }
+        Item {
+          width: parent.width
+          height: Math.max(otpCodeText.implicitHeight, otpButtons.implicitHeight, otpSecretField.implicitHeight)
+          visible: root.editEntry !== ""
+
+          // With a code: the digits large, in the digit colour, and the
+          // seconds it has left; without: scan a QR code or paste the secret.
+          Text {
+            id: otpCodeText
+            visible: root.editOtp
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.otpCode !== "" ? root.colorize(root.otpCode.replace(/(\d{3})(?=\d)/g, "$1 ")) : "······"
+            textFormat: Text.RichText
+            font.family: Style.font.family
+            font.pixelSize: Style.font.display
+          }
+          Text {
+            visible: root.editOtp
+            anchors.left: otpCodeText.right
+            anchors.leftMargin: Style.space(12)
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.otpCode !== "" ? root.otpRemaining + " s" : ""
+            textFormat: Text.PlainText
+            color: root.foreground
+            opacity: 0.5
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+          Row {
+            id: otpButtons
+            visible: root.editOtp
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.spacing.controlGap
+            CardButton { text: "Copy"; tooltipText: "Onto the clipboard, the card stays"; onClicked: root.otpCopy() }
+            CardButton { text: "Remove"; foreground: Color.urgent; onClicked: root.otpRemove() }
+          }
+          CardField {
+            id: otpSecretField
+            visible: !root.editOtp
+            anchors.left: parent.left
+            anchors.right: otpSetupButtons.left
+            anchors.rightMargin: Style.spacing.controlGap
+            anchors.verticalCenter: parent.verticalCenter
+            placeholderText: "Paste the secret (base32) or scan the QR code"
+            font.family: Style.font.family
+            KeyNavigation.tab: notesArea
+            KeyNavigation.backtab: passwordField
+            onAccepted: root.otpSet()
+            Keys.onPressed: function(event) { if (root.editKey(event)) event.accepted = true }
+          }
+          Row {
+            id: otpSetupButtons
+            visible: !root.editOtp
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.spacing.controlGap
+            CardButton { text: "Set"; selected: otpSecretField.text.trim() !== ""; onClicked: root.otpSet() }
+            CardButton { text: "Scan QR"; tooltipText: "Draw a box around the code on screen"; onClicked: root.otpScan() }
+          }
+        }
+        EditLabel {
+          visible: root.editEntry === ""
+          text: "Save the entry first to add a one-time code"
+          opacity: 0.45
         }
 
         EditLabel { text: "Notes" }
@@ -3003,7 +3348,7 @@ Item {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             text: root.setupStep === 0 ? "Password Store setup"
-              : root.setupStep + " / " + (root.stepTitles.length - 1)
+              : (root.setupStep === 6 ? root.draft.name : root.setupStep + " / " + (root.stepTitles.length - 2))
             color: root.foreground
             opacity: 0.45
             font.family: root.fontFamily
@@ -3387,6 +3732,47 @@ Item {
           color: root.setupError !== "" ? Color.urgent : root.foreground
           opacity: root.setupError !== "" || root.syncConfirm !== "" || root.removeConfirm !== "" ? 1 : 0.8
           topPadding: Style.space(4)
+        }
+
+        // -- 6. health
+        Column {
+          width: parent.width
+          spacing: root.rowSpacing
+          visible: root.setupStep === 6
+
+          SetupText {
+            text: root.healthChecked < 0
+              ? "Every entry is decrypted once, here, and nothing is written: passwords used more than once, short ones, old ones, empty ones" + (root.healthHibp ? ", and ones seen in breaches (only the first five characters of a hash leave the machine)." : ".")
+              : (root.healthFindings.length === 0
+                 ? (root.healthShortfall !== "" ? "No findings among " + root.healthChecked + " entries, but the check fell short: " + root.healthShortfall : "Nothing to report across " + root.healthChecked + " entries.")
+                 : root.healthFindings.length + " findings across " + root.healthChecked + " entries. Enter opens one in the editor." + (root.healthShortfall !== "" ? "  " + root.healthShortfall : ""))
+            opacity: 0.7
+            bottomPadding: Style.space(6)
+          }
+          Repeater {
+            model: root.healthRows
+            delegate: ChoiceRow {
+              required property var modelData
+              required property int index
+              hasCursor: root.healthIndex === index
+              lead: modelData.lead
+              title: modelData.title
+              subtitle: modelData.subtitle
+              trail: modelData.kind
+              onHoveredRow: root.healthIndex = index
+              onPicked: root.openHealthEntry(index)
+            }
+          }
+          Toggle {
+            width: parent.width
+            label: "Also check against Have I Been Pwned"
+            description: "k-anonymity: only the first five characters of each password's SHA-1 are sent; the answer is compared here (B toggles)"
+            checked: root.healthHibp
+            foreground: root.foreground
+            accent: root.selectedBackground
+            fontFamily: root.fontFamily
+            onClicked: root.saveSetting("healthHibp", !root.healthHibp)
+          }
         }
 
         // Legend full width, then Back / primary — sharing one row clipped
