@@ -57,7 +57,8 @@
       "lockSessionOnLockout": false,
       "lockoutNoLoopback": false,
       "writeCardGeometry": false,
-      "autofillSubmit": false
+      "autofillSubmit": false,
+      "healthHibp": false
     },
     "schema": [
       {
@@ -218,6 +219,13 @@
         "type": "boolean",
         "label": "Write the card's screen box for test/capture",
         "description": "Development only. Writes WxH+X+Y of the card to ~/.local/state/omarchy-passwordstore/card-geometry whenever it changes, so screenshots can be cropped to the card.",
+        "defaultValue": false
+      },
+      {
+        "key": "healthHibp",
+        "type": "boolean",
+        "label": "Health check asks Have I Been Pwned",
+        "description": "Off by default. On, the vault health check sends the first five characters of each password's SHA-1 to api.pwnedpasswords.com (k-anonymity) and compares the answer here.",
         "defaultValue": false
       }
     ]
