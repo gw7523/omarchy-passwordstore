@@ -61,7 +61,7 @@ SHIM
 
 # gpg: three keys in colon format (Alice: secret; Bob: secret but expired,
 # with an escaped colon in the uid; Carol: public only), lookups by
-# fingerprint fragment or e-mail, import and generate recorded.
+# fingerprint fragment or e-mail, import, export and generate recorded.
 cat > "$work/bin/gpg" <<'SHIM'
 #!/bin/bash
 printf '%s\n' "$*" >> "$WORK/gpg.calls"
@@ -115,6 +115,22 @@ case " $* " in
     if grep -qE 'SECRET|PRIVATE' "$last" 2>/dev/null; then secret_colons
     else public_colons
     fi ;;
+  *" --export-secret-keys "*)
+    cat <<'EOF'
+-----BEGIN PGP PRIVATE KEY BLOCK-----
+
+placeholder-secret
+-----END PGP PRIVATE KEY BLOCK-----
+EOF
+    ;;
+  *" --export "*)
+    cat <<'EOF'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+placeholder-public
+-----END PGP PUBLIC KEY BLOCK-----
+EOF
+    ;;
   *" --full-generate-key "*) touch "$WORK/generated" ;;
   *) exit 1 ;;
 esac
@@ -379,6 +395,51 @@ check "gpg-import: a missing file is an error" '.error | test("Cannot read")' "$
 grep -q -- "--import -- $work/secret.asc" "$work/gpg.calls" && ok "gpg-import: the path is handed to gpg after --" \
   || bad "gpg-import: the path is handed to gpg after --"
 
+# --- gpg-export ----------------------------------------------------------
+
+reset
+pub=$work/alice.pub.asc
+out=$("$SETUP" gpg-export --kind public --gpg-id "$ALICE" --file "$pub")
+check "gpg-export: public export reports ok, kind, fingerprint and bytes" \
+  '.ok == true and .kind == "public" and .file == "'"$pub"'" and .fingerprint == "'"$ALICE"'" and .bytes > 0' "$out"
+bytes=$(wc -c < "$pub"); bytes=${bytes//[[:space:]]/}
+[[ $(jq -r .bytes <<<"$out") == "$bytes" ]] && ok "gpg-export: bytes matches the public file" \
+  || bad "gpg-export: bytes matches the public file"
+[[ $(stat -c %a "$pub") == 644 ]] && ok "gpg-export: public file is 644" || bad "gpg-export: public file is 644"
+grep -q 'BEGIN PGP PUBLIC KEY BLOCK' "$pub" && ok "gpg-export: public armor is written" \
+  || bad "gpg-export: public armor is written"
+grep -q -- "--armor --export -- $ALICE" "$work/gpg.calls" && ok "gpg-export: public calls gpg --export after --" \
+  || bad "gpg-export: public calls gpg --export after --"
+
+sec=$work/alice.sec.asc
+out=$("$SETUP" gpg-export --kind secret --gpg-id "$ALICE" --file "$sec")
+check "gpg-export: secret export reports the warning and 600-worthy kind" \
+  '.ok == true and .kind == "secret" and .file == "'"$sec"'" and .fingerprint == "'"$ALICE"'" and .bytes > 0 and .warning == "Whoever holds this file and its passphrase can read every entry encrypted for the key."' "$out"
+[[ $(stat -c %a "$sec") == 600 ]] && ok "gpg-export: secret file is 600" || bad "gpg-export: secret file is 600"
+grep -q 'BEGIN PGP PRIVATE KEY BLOCK' "$sec" && ok "gpg-export: secret armor is written" \
+  || bad "gpg-export: secret armor is written"
+grep -q -- "--armor --export-secret-keys -- $ALICE" "$work/gpg.calls" && ok "gpg-export: secret calls gpg --export-secret-keys after --" \
+  || bad "gpg-export: secret calls gpg --export-secret-keys after --"
+
+out=$("$SETUP" gpg-export --kind public --gpg-id "$ALICE" --file "$pub")
+check "gpg-export: an existing file is refused without --force" '.error | test("already exists")' "$out"
+out=$("$SETUP" gpg-export --kind public --gpg-id "$ALICE" --file "$pub" --force)
+check "gpg-export: --force overwrites an existing file" '.ok == true and .kind == "public"' "$out"
+
+gitrepo=$work/export-git
+mkdir -p "$gitrepo"
+git -C "$gitrepo" init -q
+out=$("$SETUP" gpg-export --kind secret --gpg-id "$ALICE" --file "$gitrepo/secret.asc")
+check "gpg-export: a secret into a git checkout is refused without --force" '.error | test("git checkout")' "$out"
+[[ -e $gitrepo/secret.asc ]] && bad "gpg-export: did not write inside the checkout" \
+  || ok "gpg-export: did not write inside the checkout"
+
+out=$("$SETUP" gpg-export --file "$work/no-id.asc")
+check "gpg-export: a missing --gpg-id is an error" '.error | test("Which key")' "$out"
+
+out=$("$SETUP" gpg-export --gpg-id "$ALICE" --file "$work/no-such-dir/key.asc")
+check "gpg-export: a missing directory is an error" '.error | test("No directory")' "$out"
+
 reset
 out=$("$SETUP" install pass wtype)
 grep -qx "pkg add pass wtype" "$work/omarchy.calls" && ok "install: runs omarchy pkg add in the terminal" \
@@ -389,6 +450,12 @@ check "install: refuses a package name with shell characters" '.error | test("No
 
 "$SETUP" >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "no command exits 2" || bad "no command exits 2"
 "$SETUP" status --bogus >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "an unknown option exits 2" || bad "an unknown option exits 2"
+
+# gpg-import --delete: the file is gone afterwards.
+printf 'placeholder\n' > "$work/todelete.asc"
+out=$("$SETUP" gpg-import --file "$work/todelete.asc" --delete)
+check "gpg-import --delete reports deleted" '.deleted == true' "$out"
+[[ ! -e $work/todelete.asc ]] && ok "gpg-import --delete removes the file" || bad "gpg-import --delete removes the file"
 
 # --- pinentry ---------------------------------------------------------------
 
