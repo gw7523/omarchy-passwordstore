@@ -58,7 +58,9 @@
       "unlockAttempts": 5,
       "unlockLockoutSec": 30,
       "lockSessionOnLockout": false,
-      "lockoutNoLoopback": false
+      "lockoutNoLoopback": false,
+      "idleLockMin": 0,
+      "clearOnLock": true
     },
     "schema": [
       {
@@ -206,6 +208,23 @@
         "label": "Refuse loopback pinentry (lockout coverage)",
         "description": "Off by default. On, gpg-agent.conf gets no-allow-loopback-pinentry, so `gpg --pinentry-mode loopback` (which never passes through the prompt and so cannot be counted) is refused; other tools that rely on loopback stop working.",
         "defaultValue": false
+      },
+      {
+        "key": "idleLockMin",
+        "type": "integer",
+        "label": "Forget the passphrase after idle minutes",
+        "description": "0 is off. After this many minutes without using the card, the vault key's cached passphrase is cleared from gpg-agent (by keygrip; other keys stay), the clipboard is cleared, and files left by share are removed; the next use asks again.",
+        "min": 0,
+        "max": 1440,
+        "step": 5,
+        "defaultValue": 0
+      },
+      {
+        "key": "clearOnLock",
+        "type": "boolean",
+        "label": "Forget on screen lock and before sleep",
+        "description": "The same clearing when the session locks (hyprctl locked, polled every 5 s) and when logind announces sleep.",
+        "defaultValue": true
       }
     ]
   },

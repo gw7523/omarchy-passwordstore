@@ -218,6 +218,24 @@ picker in a terminal; pick the device, and the file is removed when the
 picker closes, sent or not. The recipient runs `gpg --decrypt` on what
 they received.
 
+## What the key on the bar shows
+
+Besides opening the card, the key wears a dot when the active vault has
+changes not yet pushed (or when the last pull failed, in the urgent
+colour) and turns into a lock while the passphrase lockout holds; the
+tooltip says which. It asks `passwordstore-setup bar-status` every three
+minutes and shortly after the card was used; nothing is decrypted for it.
+
+## Forgetting
+
+With `idleLockMin` set, going that long without using the card makes the
+seat forget the vault: the vault key's passphrase is cleared from
+gpg-agent by keygrip (other keys stay cached), the clipboard is cleared,
+and any file `share` left under the runtime dir is removed; the next
+copy asks for the passphrase again. `clearOnLock` (on) does the same when
+the session locks and when logind announces sleep. `passwordstore-setup
+forget` is the command behind both.
+
 ## Keys
 
 | Key                      | Action                                                   |
@@ -311,6 +329,8 @@ string, which both the card and the helper read back as the array.
 | `unlockLockoutSec` | `30`                       | The first lockout; each further one is four times longer, up to 30 min. |
 | `lockSessionOnLockout` | `false`                | Also lock the session (`omarchy-system-lock`) at the longest tier.     |
 | `lockoutNoLoopback` | `false`                   | Make gpg-agent refuse `--pinentry-mode loopback`, which bypasses the prompt and its count. Breaks tools that rely on loopback. |
+| `idleLockMin`    | `0`                          | Forget the vault's passphrase, the clipboard and share files after this many idle minutes; 0 is off. |
+| `clearOnLock`    | `true`                       | The same on screen lock and before sleep.                              |
 | `allowTyping`    | `true`                       | Enable `Ctrl+Enter` / `Ctrl+Shift+Enter` (needs `wtype`).               |
 | `notifyOnCopy`   | `true`                       | Notify when something was copied, naming the entry and its username. Failures are always notified.         |
 
@@ -348,7 +368,7 @@ hand:
   `--sync --vault ID` the changes end with a push.
 - `passwordstore-setup <command> [...]` is the wizard's back end: `status`,
   `gpg-list`, `gpg-generate`, `gpg-inspect`, `gpg-import` (`--delete` shreds the file afterwards), `gpg-export` (`--kind public|secret`, `--force`), `install`, `init`, `sync-status`,
-  `sync-setup`, `sync-pull`, `sync-push`, `pinentry`. JSON on stdout, settings read from
+  `sync-setup`, `sync-pull`, `sync-push`, `pinentry`, `bar-status`, `forget`. JSON on stdout, settings read from
   the vault's record in `shell.json` when not given as options. Anything that
   may ask for a passphrase or a credential runs in a floating terminal that
   the helper waits on; the card only ever sees status.

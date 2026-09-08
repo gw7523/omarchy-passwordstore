@@ -127,6 +127,58 @@ Item {
   // layout where the last segment is the entry and the username lives
   // inside the file.
   readonly property bool usernameInPath: boolSetting("usernameInPath", true)
+  // Forgetting: after idleLockMin minutes without use (0: never), on the
+  // session lock, and before sleep, the seat forgets the vault's cached
+  // passphrase (by keygrip), the clipboard and any file share left; the
+  // next use asks for the passphrase again.
+  readonly property int idleLockMin: intSetting("idleLockMin", 0, 0, 1440)
+  readonly property bool clearOnLock: boolSetting("clearOnLock", true)
+  property double lastUse: Date.now()
+  property bool forgotten: false
+  function noteUse() { lastUse = Date.now(); forgotten = false }
+  function forget(reason) {
+    if (forgotten || forgetProcess.running) return
+    forgotten = true
+    var command = [setupPath, "forget"]
+    if (storeDir !== "") command.push("--store", storeDir)
+    forgetProcess.command = command
+    forgetProcess.running = true
+    console.log("passwordstore: forgot the vault's passphrase and clipboard:", reason)
+  }
+  Process { id: forgetProcess; running: false; command: [] }
+  Timer {
+    interval: 60000
+    repeat: true
+    running: root.idleLockMin > 0
+    onTriggered: if (!root.forgotten && Date.now() - root.lastUse > root.idleLockMin * 60000) root.forget("idle for " + root.idleLockMin + " min")
+  }
+  // The session lock is ext-session-lock, not a layer; `hyprctl locked`
+  // says. Polled while the setting is on; a transition to locked forgets.
+  property bool sessionLocked: false
+  Process {
+    id: lockedProcess
+    running: false
+    command: ["hyprctl", "locked"]
+    stdout: StdioCollector { id: lockedStdout; waitForEnd: true }
+    onExited: function(exitCode) {
+      var now = String(lockedStdout.text || "").trim() === "true"
+      if (now && !root.sessionLocked) root.forget("session locked")
+      root.sessionLocked = now
+    }
+  }
+  Timer {
+    interval: 5000
+    repeat: true
+    running: root.clearOnLock
+    onTriggered: if (!lockedProcess.running) lockedProcess.running = true
+  }
+  // logind announces sleep on the system bus; gdbus prints each signal.
+  Process {
+    id: sleepProcess
+    running: root.clearOnLock
+    command: ["gdbus", "monitor", "--system", "--dest", "org.freedesktop.login1", "--object-path", "/org/freedesktop/login1"]
+    stdout: SplitParser { onRead: function(line) { if (line.indexOf("PrepareForSleep") >= 0 && line.indexOf("true") >= 0) root.forget("sleep") } }
+  }
 
   // The lockout pinentry-omarchy reports through status: while it holds,
   // nothing that decrypts is attempted and the legend shows the wait.
@@ -367,6 +419,7 @@ Item {
   // --- open / close (the shell's overlay contract) ----------------------
 
   function open(payloadJson) {
+    root.noteUse()
     if (root.mode === "edit") root.resetEditor()
     if (root.mode === "share") root.leaveShare(true)
     root.filterText = ""
@@ -599,6 +652,7 @@ Item {
   // the passphrase would only queue a second prompt.
   function runAction(action, entry) {
     if (actionProcess.running) return
+    noteUse()
     // Nothing that decrypts while locked; the legend says how long.
     if (locked && action !== "insert") return
     var name = entry ? String(entry.name) : ""

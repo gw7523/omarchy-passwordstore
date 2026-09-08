@@ -97,7 +97,9 @@ case " $* " in
     case " $* " in
       *" --list-secret-keys "*) secret_colons ;;
       *) public_colons ;;
-    esac ;;
+    esac
+    # --with-keygrip: a grp line per key and subkey, as gpg prints them.
+    [[ " $* " == *" --with-keygrip "* ]] && printf 'grp:::::::::GRIP1:\ngrp:::::::::GRIP2:\n' ;;
   *" --list-secret-keys "*)
     known "$last" ABCDEF0123456789ABCDEF0123456789ABCDEF01 alice@example.com \
       FEDCBA9876543210FEDCBA9876543210FEDCBA98 bob@example.com ;;
@@ -468,6 +470,45 @@ printf -- '-----BEGIN PGP PUBLIC KEY BLOCK-----\nplaceholder\n' > "$work/pub-kee
 "$SETUP" gpg-import --file "$work/pub-keep.asc" --delete >/dev/null
 [[ -e $work/pub-keep.asc ]] && ok "gpg-import --delete leaves a public key file alone" || bad "gpg-import --delete leaves a public key file alone" \
   || bad "gpg-import --delete on a symlink unlinks it and leaves the target intact"
+
+# --- bar-status and forget --------------------------------------------------
+
+export XDG_RUNTIME_DIR="$work/run3"; mkdir -p "$XDG_RUNTIME_DIR"; rm -f "$XDG_STATE_HOME/omarchy-passwordstore/last-pull-error"
+b="$work/barstore"; mkdir -p "$b"; printf '%s\n' "$ALICE" > "$b/.gpg-id"
+out=$("$SETUP" bar-status --store "$b" --vault personal)
+check "bar-status: a plain directory has nothing unpushed and no failed pull" '.unpushed == 0 and .pullFailed == false and .locked == false' "$out"
+remote_c="$work/remote-c.git"; git init -q --bare -b main "$remote_c"
+git -C "$b" init -q -b main; git -C "$b" config user.email t@example.invalid; git -C "$b" config user.name t
+git -C "$b" add -A; git -C "$b" commit -q -m one; git -C "$b" remote add origin "$remote_c"; git -C "$b" push -q -u origin main
+: > "$b/x.gpg"; git -C "$b" add -A; git -C "$b" commit -q -m two
+out=$("$SETUP" bar-status --store "$b" --vault personal)
+check "bar-status: counts commits not yet pushed" '.unpushed == 1' "$out"
+printf 'offline' > "$XDG_STATE_HOME/omarchy-passwordstore/last-pull-error" 2>/dev/null || { mkdir -p "$XDG_STATE_HOME/omarchy-passwordstore"; printf 'offline' > "$XDG_STATE_HOME/omarchy-passwordstore/last-pull-error"; }
+out=$("$SETUP" bar-status --store "$b" --vault personal)
+check "bar-status: a failed pull is flagged" '.pullFailed == true' "$out"
+rm -f "$XDG_STATE_HOME/omarchy-passwordstore/last-pull-error"
+"$PLUGIN_DIR/pinentry-omarchy" --set-policy '{"attempts": 2, "lockoutSec": 30}' >/dev/null; "$PLUGIN_DIR/pinentry-omarchy" --unlock-failed >/dev/null; "$PLUGIN_DIR/pinentry-omarchy" --unlock-failed >/dev/null
+out=$("$SETUP" bar-status --store "$b" --vault personal)
+check "bar-status: the lockout is flagged" '.locked == true' "$out"
+"$PLUGIN_DIR/pinentry-omarchy" --unlock-ok >/dev/null
+
+cat > "$work/bin/gpg-connect-agent" <<'SHIM'
+#!/bin/bash
+printf '%s\n' "$*" >> "$WORK/agent.calls"; echo OK
+SHIM
+cat > "$work/bin/wl-copy" <<'SHIM'
+#!/bin/bash
+printf '%s\n' "$*" >> "$WORK/wlcopy.calls"
+SHIM
+chmod +x "$work/bin/gpg-connect-agent" "$work/bin/wl-copy"
+mkdir -p "$XDG_RUNTIME_DIR/omarchy-passwordstore/share"; : > "$XDG_RUNTIME_DIR/omarchy-passwordstore/share/left.asc"
+out=$("$SETUP" forget --store "$b" --vault personal)
+check "forget: clears the agent's cache for the store's key and its subkey, by keygrip" '.ok == true and .clearedKeys == 2' "$out"
+grep -q 'CLEAR_PASSPHRASE GRIP1' "$work/agent.calls" && grep -q 'CLEAR_PASSPHRASE GRIP2' "$work/agent.calls" && ! grep -q "$ALICE" "$work/agent.calls" \
+  && ok "forget: CLEAR_PASSPHRASE per keygrip, never the fingerprint" || bad "forget: CLEAR_PASSPHRASE per keygrip, never the fingerprint"
+grep -qx -- '--clear' "$work/wlcopy.calls" && ok "forget: clears the clipboard" || bad "forget: clears the clipboard"
+[[ ! -e $XDG_RUNTIME_DIR/omarchy-passwordstore/share/left.asc && $(jq -r .sharesRemoved <<<"$out") == 1 ]] && ok "forget: removes files share left behind" || bad "forget: removes files share left behind"
+rm -f "$work/bin/gpg-connect-agent" "$work/bin/wl-copy"; unset XDG_RUNTIME_DIR
 
 # --- pinentry ---------------------------------------------------------------
 
