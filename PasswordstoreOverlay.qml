@@ -280,6 +280,15 @@ Item {
     activateVault(next)
   }
 
+  // Make ID the active vault without touching the search (the Health
+  // page opening a finding in another vault): the listing is re-read,
+  // the filter and cursor stay.
+  function adoptVault(id) {
+    if (vaultById(id) === null || id === activeVaultId) return
+    var error = saveSetting("activeVaultId", id)
+    if (error !== "") activeOverride = id
+    refresh()
+  }
   function activateVault(id) {
     if (vaultById(id) === null) return
     var error = saveSetting("activeVaultId", id)
@@ -794,7 +803,7 @@ Item {
   property bool editOtp: false
   property int editOtpPeriod: 30
   property var editLoaded: ({})        // the fields as read, to know when there are unsaved edits
-  readonly property bool editDirty: editEntry !== "" && (
+  readonly property bool editDirty: (
     passwordField.text !== String(editLoaded.password || "") || notesArea.text !== String(editLoaded.notes || "")
     || urlField.text !== String(editLoaded.url || "") || usernameField.text !== String(editLoaded.username || "")
     || nameField.text !== String(editLoaded.title || ""))
@@ -804,18 +813,24 @@ Item {
   property bool otpScanning: false
   property string otpBuffer: ""
   property string otpSetPayload: ""
+  // editOtp says the entry has a code on disk (save keeps it); otpArmed
+  // says the countdown is asking for it. A failed fetch stops the asking,
+  // never the keeping.
+  property bool otpArmed: false
+  property string otpFor: ""            // the entry the running otp-code is about
   Timer {
     interval: 1000
     repeat: true
-    running: root.opened && root.mode === "edit" && root.editOtp
+    running: root.opened && root.mode === "edit" && root.otpArmed
     onTriggered: {
       if (root.otpRemaining > 1) root.otpRemaining -= 1
       else root.fetchOtp()
     }
   }
   function fetchOtp() {
-    if (otpProcess.running || editEntry === "" || !editOtp) return
+    if (otpProcess.running || editEntry === "" || !otpArmed) return
     otpBuffer = ""
+    otpFor = editEntry
     var command = [actionPath, "otp-code", editEntry]
     if (storeDir !== "") command.push("--store", storeDir)
     otpProcess.command = command
@@ -830,12 +845,12 @@ Item {
     onExited: function(exitCode) {
       var text = root.otpBuffer
       root.otpBuffer = ""
-      if (root.mode !== "edit") return
+      if (root.mode !== "edit" || root.editEntry !== root.otpFor) return
       var parsed = null
       try { parsed = JSON.parse(text) } catch (e) { parsed = null }
       if (exitCode !== 0 || !parsed) {
         // No countdown means no more asking; the error stays on the page.
-        root.otpCode = ""; root.otpRemaining = 0; root.editOtp = false
+        root.otpCode = ""; root.otpRemaining = 0; root.otpArmed = false
         root.editError = String(otpStderr.text || "").replace(/\s+/g, " ").trim() || "Could not read the code"
         return
       }
@@ -852,10 +867,20 @@ Item {
     var command = [actionPath, "copy-otp", editEntry, "--clip-time", String(clipTimeSec)]
     if (storeDir !== "") command.push("--store", storeDir)
     if (!notifyOnCopy) command.push("--quiet")
+    editError = ""
     otpCopyProcess.command = command
     otpCopyProcess.running = true
   }
-  Process { id: otpCopyProcess; running: false; command: [] }
+  Process {
+    id: otpCopyProcess
+    running: false
+    command: []
+    stderr: StdioCollector { id: otpCopyStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (exitCode === 0 || root.mode !== "edit") return
+      root.editError = String(otpCopyStderr.text || "").replace(/\s+/g, " ").trim() || "Could not copy the code"
+    }
+  }
 
   function otpSet() {
     var secret = otpSecretField.text.trim()
@@ -1055,6 +1080,11 @@ Item {
     urlField.text = ""
     otpSecretField.text = ""
     editOtp = false
+    otpArmed = false
+    otpProcess.running = false
+    otpFor = ""
+    editLoaded = {}
+    healthReturn = false
     otpCode = ""
     otpRemaining = 0
     nameField.text = ""
@@ -1134,6 +1164,7 @@ Item {
     urlField.text = String(parsed.url || "")
     editLoaded = { password: passwordField.text, notes: notesArea.text, url: urlField.text, username: usernameField.text, title: nameField.text }
     editOtp = !!parsed.otp
+    otpArmed = editOtp
     editOtpPeriod = Math.max(1, Number(parsed.otpPeriod) || 30)
     otpCode = ""
     otpRemaining = 0
@@ -1469,10 +1500,11 @@ Item {
       if (parsed && parsed.findings) {
         healthFindings = parsed.findings
         healthChecked = Number(parsed.checked) || 0
-        var failed = Number(parsed.failed) || 0
-        setupNote = healthFindings.length === 0 ? "Nothing to report across " + healthChecked + " entries." : ""
-        setupError = (failed > 0 ? failed + " entries could not be read (a cancelled prompt, a missing key); they were not checked. " : "")
-          + (parsed.hibpError ? String(parsed.hibpError) + " No breach check was made." : "")
+        healthFailed = Number(parsed.failed) || 0
+        healthHibpError = parsed.hibpError ? String(parsed.hibpError) : ""
+        setupNote = ""
+        setupError = ""
+        if (healthFailed > 0 || healthHibpError !== "") setupError = healthShortfall
       } else setupError = String((parsed && parsed.error) || "The check did not run")
       return
     }
@@ -1642,7 +1674,7 @@ Item {
     var name = healthRows[index].entry
     if (!name) return
     // The findings are the draft vault's; the editor works on the active one.
-    if (healthVaultId !== "" && healthVaultId !== activeVaultId) activateVault(healthVaultId)
+    if (healthVaultId !== "" && healthVaultId !== activeVaultId) adoptVault(healthVaultId)
     healthReturn = true
     mode = "search"
     openEditor({ name: name })
@@ -1650,11 +1682,20 @@ Item {
   function runHealth() {
     healthFindings = []
     healthChecked = -1
+    healthFailed = 0
+    healthHibpError = ""
     healthIndex = 0
     healthVaultId = draft.id
     runSetup("audit", healthHibp ? ["--hibp"] : [], "Reading every entry of " + draft.name + " (pinentry may ask)…", draft)
   }
   property string healthVaultId: ""     // whose store the findings are about
+  property int healthFailed: 0          // entries the audit could not read
+  property string healthHibpError: ""   // why the breach check did not run
+  // What the last check could not cover; shown with the findings, so it
+  // does not vanish with the page's transient error line.
+  readonly property string healthShortfall:
+    (healthFailed > 0 ? healthFailed + " entries could not be read (a cancelled prompt, a missing key); they were not checked. " : "")
+    + (healthHibpError !== "" ? healthHibpError + " No breach check was made." : "")
   property bool healthReturn: false     // the editor was opened from a finding: Esc comes back here
   readonly property var healthRows: {
     // One row per entry, so every one of a reused group can be opened.
@@ -3685,8 +3726,9 @@ Item {
           SetupText {
             text: root.healthChecked < 0
               ? "Every entry is decrypted once, here, and nothing is written: passwords used more than once, short ones, old ones, empty ones" + (root.healthHibp ? ", and ones seen in breaches (only the first five characters of a hash leave the machine)." : ".")
-              : (root.healthFindings.length === 0 ? "Nothing to report across " + root.healthChecked + " entries."
-                 : root.healthFindings.length + " findings across " + root.healthChecked + " entries. Enter opens one in the editor.")
+              : (root.healthFindings.length === 0
+                 ? (root.healthShortfall !== "" ? "No findings among " + root.healthChecked + " entries, but the check fell short: " + root.healthShortfall : "Nothing to report across " + root.healthChecked + " entries.")
+                 : root.healthFindings.length + " findings across " + root.healthChecked + " entries. Enter opens one in the editor." + (root.healthShortfall !== "" ? "  " + root.healthShortfall : ""))
             opacity: 0.7
             bottomPadding: Style.space(6)
           }

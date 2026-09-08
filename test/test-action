@@ -328,8 +328,17 @@ SHIM
 chmod +x "$work/bin/slurp" "$work/bin/grim" "$work/bin/zbarimg"
 reset
 "$ACTION" otp-scan site/bob --quiet >/dev/null 2>&1
-grep -q '^otpauth://totp/Example:bob?secret=JBSWY3DPEHPK3PXP&issuer=Example$' "$work/inserted" && ok "otp-scan stores the URI zbarimg read from the region" \
-  || bad "otp-scan stores the URI zbarimg read from the region"
+grep -q '^otpauth://totp/site%2Fbob?secret=JBSWY3DPEHPK3PXP&issuer=Example$' "$work/inserted" && ok "otp-scan stores the URI zbarimg read from the region, rebuilt under otp-set's rules" \
+  || bad "otp-scan stores the URI zbarimg read from the region, rebuilt under otp-set's rules ($(cat "$work/inserted" 2>/dev/null | tr '\n' '|'))"
+printf '#!/bin/bash\ncat >/dev/null; echo "otpauth://totp/x?secret=ABC&period=0"\n' > "$work/bin/zbarimg"
+reset
+"$ACTION" otp-scan site/bob --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/inserted ]] && ok "otp-scan refuses a secret that is not whole base32 groups" || bad "otp-scan refuses a secret that is not whole base32 groups"
+printf '#!/bin/bash\ncat >/dev/null; echo "otpauth://totp/Ex%%3Aamp?secret=JBSWY3DPEHPK3PXP&issuer=My%%20Bank&digits=8&period=60"\n' > "$work/bin/zbarimg"
+reset
+"$ACTION" otp-scan site/bob --quiet >/dev/null 2>&1
+grep -q '^otpauth://totp/site%2Fbob?secret=JBSWY3DPEHPK3PXP&issuer=My%20Bank&digits=8&period=60$' "$work/inserted" && ok "otp-scan keeps issuer, digits and period" \
+  || bad "otp-scan keeps issuer, digits and period ($(cat "$work/inserted" 2>/dev/null | tr '\n' '|'))"
 printf '#!/bin/bash\ncat >/dev/null; echo "https://not-an-otp.example"\n' > "$work/bin/zbarimg"
 reset
 "$ACTION" otp-scan site/bob --quiet >/dev/null 2>&1
@@ -343,8 +352,17 @@ rm -f "$work/bin/slurp" "$work/bin/grim" "$work/bin/zbarimg"
 reset
 "$ACTION" copy-password missing --quiet >/dev/null 2>&1
 [[ $? -eq 1 ]] && ok "a pass failure exits 1" || bad "a pass failure exits 1"
+
 grep -q 'not in the password store' "$work/notify.calls" && ok "a pass failure is notified even with --quiet" \
   || bad "a pass failure is notified even with --quiet"
+# A save that must carry the code over refuses when the entry cannot be
+# read, and when the code is not in the metadata block any more.
+reset
+printf '{"name":"missing","password":"new","otp":true}' | "$ACTION" save missing --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/inserted ]] && ok "save with otp refuses when the entry cannot be read (nothing written)" || bad "save with otp refuses when the entry cannot be read (nothing written)"
+reset
+printf '{"name":"otpnotes/one","password":"new","otp":true}' | "$ACTION" save otpnotes/one --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/inserted ]] && ok "save with otp refuses when only the notes hold an otpauth line" || bad "save with otp refuses when only the notes hold an otpauth line"
 
 reset
 "$ACTION" copy-password 'x/<b>bold</b> & co' --clip-time 1 >/dev/null 2>&1
