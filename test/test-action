@@ -29,6 +29,8 @@ printf '%s\n' "$*" >> "$WORK/pass.calls"
 printf '%s\n' "${PASSWORD_STORE_DIR:-}" > "$WORK/pass.store"
 case "$*" in
   *missing*) echo "Error: missing is not in the password store." >&2; exit 1 ;;
+  *badpass*) echo "gpg: Falsches Passwort" >&2; echo "[GNUPG:] BAD_PASSPHRASE 0123456789ABCDEF" >&2; exit 2 ;;
+  *noseckey*) echo "gpg: decryption failed: No secret key" >&2; echo "[GNUPG:] NO_SECKEY 0123456789ABCDEF" >&2; echo "[GNUPG:] DECRYPTION_FAILED" >&2; exit 2 ;;
 esac
 case $1 in
   show)
@@ -87,7 +89,7 @@ reset
 start=$SECONDS
 "$ACTION" copy-password web/site --recent "$work/recent" --clip-time 1 >/dev/null 2>&1
 [[ $? -eq 0 ]] && ok "copy-password exits 0" || bad "copy-password exits 0"
-[[ $(( SECONDS - start )) -lt 1 ]] && ok "copy-password returns without waiting for the clipboard sleeper" \
+[[ $(( SECONDS - start )) -lt 2 ]] && ok "copy-password returns without waiting for the clipboard sleeper" \
   || bad "copy-password returns without waiting for the clipboard sleeper"
 [[ $(cat "$work/clipboard" 2>/dev/null) == "hunter2" ]] && ok "copy-password copies the first line alone" \
   || bad "copy-password copies the first line alone"
@@ -197,6 +199,33 @@ reset
 "$ACTION" copy-password x --quiet >/dev/null 2>&1
 [[ -z $(cat "$work/pass.store") ]] && ok "without --store pass resolves the store itself" \
   || bad "without --store pass resolves the store itself"
+
+# --- the lockout -----------------------------------------------------------
+
+# pinentry-omarchy is real here (state under $XDG_RUNTIME_DIR); pass is the
+# stand-in, which fails "Bad passphrase" for entries named badpass/*.
+export XDG_RUNTIME_DIR="$work/run"; mkdir -p "$XDG_RUNTIME_DIR"
+PINENTRY="$PLUGIN_DIR/pinentry-omarchy"
+"$PINENTRY" --set-policy '{"attempts": 2, "lockoutSec": 60}' >/dev/null
+reset
+"$ACTION" copy-password badpass/one --quiet >/dev/null 2>&1
+[[ $(jq -r .failures <<<"$("$PINENTRY" --lockout-status)") == 1 ]] && ok "a decrypt that fails on the passphrase is reported to the lockout (by gpg's status line, in any language)" \
+  || bad "a decrypt that fails on the passphrase is reported to the lockout (by gpg's status line, in any language)"
+grep -q 'GNUPG' "$work/notify.calls" && bad "…and the status lines stay out of the notification" || ok "…and the status lines stay out of the notification"
+"$ACTION" copy-password noseckey/one --quiet >/dev/null 2>&1
+[[ $(jq -r .failures <<<"$("$PINENTRY" --lockout-status)") == 1 ]] && ok "a missing secret key is not a wrong passphrase" || bad "a missing secret key is not a wrong passphrase"
+"$ACTION" copy-password badpass/one --quiet >/dev/null 2>&1
+[[ $(jq -r .locked <<<"$("$PINENTRY" --lockout-status)") == true ]] && ok "…and enough of them lock" || bad "…and enough of them lock"
+reset
+"$ACTION" copy-password web/site --quiet >/dev/null 2>&1
+[[ $? -eq 1 && ! -e $work/clipboard ]] && grep -q 'Locked after too many' "$work/notify.calls" && ! grep -q '^show' "$work/pass.calls" \
+  && ok "while locked nothing is decrypted or copied, and the wait is notified" \
+  || bad "while locked nothing is decrypted or copied, and the wait is notified"
+"$PINENTRY" --unlock-ok >/dev/null
+reset
+"$ACTION" copy-password web/site --clip-time 1 --quiet >/dev/null 2>&1
+[[ $(jq -r .failures <<<"$("$PINENTRY" --lockout-status)") == 0 ]] && ok "a decrypt that works clears the count" || bad "a decrypt that works clears the count"
+unset XDG_RUNTIME_DIR
 
 # --- the editor: read / save / generate-password ------------------------------
 

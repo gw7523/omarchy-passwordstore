@@ -412,6 +412,19 @@ check "pinentry --disable: back to default" '.pinentry == "default"' "$out"
 grep -q pinentry-program "$GNUPGHOME/gpg-agent.conf" && bad "pinentry --disable: drops the line" || ok "pinentry --disable: drops the line"
 unset GNUPGHOME
 
+# --- lockout policy ---------------------------------------------------------
+
+export XDG_RUNTIME_DIR="$work/run2"; mkdir -p "$XDG_RUNTIME_DIR"
+out=$("$SETUP" lockout-policy --vault personal)
+check "lockout-policy: defaults when the settings are unset" '.ok == true and .policy.attempts == 5 and .policy.lockoutSec == 30 and .policy.lockSession == false' "$out"
+jq '(.bar.layout.right[0]) += {unlockAttempts: 3, unlockLockoutSec: 10, lockSessionOnLockout: true}' "$XDG_CONFIG_HOME/omarchy/shell.json" > "$work/sj" && mv "$work/sj" "$XDG_CONFIG_HOME/omarchy/shell.json"
+out=$("$SETUP" lockout-policy --vault personal)
+check "lockout-policy: takes the entry's settings" '.policy.attempts == 3 and .policy.lockoutSec == 10 and .policy.lockSession == true' "$out"
+[[ $(jq -r .attempts "$XDG_RUNTIME_DIR/pinentry-omarchy/policy.json") == 3 ]] && ok "lockout-policy: pinentry-omarchy has it" || bad "lockout-policy: pinentry-omarchy has it"
+out=$("$SETUP" status --vault personal)
+check "status: reports the lockout" '.lockout.locked == false and .lockout.attempts == 3' "$out"
+unset XDG_RUNTIME_DIR
+
 echo
 printf '%d passed, %d failed\n' "$passed" "$failed"
 (( failed == 0 ))

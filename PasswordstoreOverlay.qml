@@ -128,6 +128,28 @@ Item {
   // inside the file.
   readonly property bool usernameInPath: boolSetting("usernameInPath", true)
 
+  // The lockout pinentry-omarchy reports through status: while it holds,
+  // nothing that decrypts is attempted and the legend shows the wait.
+  readonly property var lockout: status && status.lockout ? status.lockout : null
+  property int lockoutRemaining: 0
+  readonly property bool locked: lockoutRemaining > 0
+  function syncLockout() {
+    lockoutRemaining = lockout && lockout.locked ? Math.max(0, Number(lockout.remaining) || 0) : 0
+  }
+  onLockoutChanged: syncLockout()
+  Timer {
+    interval: 1000
+    repeat: true
+    running: root.opened && root.lockoutRemaining > 0
+    onTriggered: {
+      root.lockoutRemaining = Math.max(0, root.lockoutRemaining - 1)
+      if (root.lockoutRemaining === 0) root.runSetup("status", [], "", root.activeVault)
+    }
+  }
+  function formatRemaining(seconds) {
+    return Math.floor(seconds / 60) + ":" + (seconds % 60 < 10 ? "0" : "") + (seconds % 60)
+  }
+
   // --- vaults -----------------------------------------------------------
 
   // A vault record with every field present. `legacy` marks the one-store
@@ -355,6 +377,9 @@ Item {
     // up without a restart. The status check runs alongside it and decides
     // whether the card is the search or the wizard.
     root.refresh()
+    // The lockout policy follows the settings; pinentry-omarchy reads it
+    // from the runtime dir, so it is handed over on every open.
+    root.runSetup("lockout-policy", [], "", root.activeVault)
     root.runSetup("status", [], "", root.activeVault)
     if (root.mode === "setup") root.focusSetupPage()
     else Qt.callLater(function() { keyCatcher.forceActiveFocus() })
@@ -568,6 +593,8 @@ Item {
   // the passphrase would only queue a second prompt.
   function runAction(action, entry) {
     if (actionProcess.running) return
+    // Nothing that decrypts while locked; the legend says how long.
+    if (locked && action !== "insert") return
     var name = entry ? String(entry.name) : ""
     // The card's own editor for new entries and edits; `pass edit` in a
     // terminal stays available (Alt+Shift+E) for an entry in some other format.
@@ -1006,6 +1033,7 @@ Item {
   }
 
   function handleSetupResult(op, parsed) {
+    if (op === "lockout-policy") return
     if (op === "pinentry") {
       if (parsed && parsed.ok) {
         setupNote = parsed.pinentry === "omarchy" ? "gpg-agent now asks with Omarchy's prompt." : "gpg-agent is back on its default prompt."
@@ -1492,6 +1520,8 @@ Item {
   // look) or whatever gpg-agent.conf names. Toggled from the GPG page.
   readonly property string pinentryState: status && status.pinentry ? String(status.pinentry) : ""
   function togglePinentry() {
+    // Switching prompts while locked would be the way around the lock.
+    if (locked) { setupError = "Locked for " + formatRemaining(lockoutRemaining) + "; the prompt cannot be changed now"; return }
     runSetup("pinentry", [pinentryState === "omarchy" ? "--disable" : "--enable"], "", draft)
   }
 
@@ -1690,6 +1720,7 @@ Item {
     if (syncNote !== "") line += "\n" + syncNote
     if (status && status.secretKeyPresent === false)
       line += "\nNo secret key for " + storeKeyLabel + " in this keyring (F2)"
+    if (locked) line += "\nLocked after too many wrong passphrases  ·  " + formatRemaining(lockoutRemaining)
     return line
   }
 
