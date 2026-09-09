@@ -9,7 +9,7 @@
 # plugin folder on purpose — omarchy-plugin-validate refuses any symlink
 # inside one.
 #
-It also refuses a QML file that declares the same member twice in one scope,
+# It also refuses a QML file that declares the same member twice in one scope,
 # which qmllint does not catch and which makes the type fail to load.
 #
 # Two warning classes are expected and are not defects:
