@@ -989,7 +989,6 @@ Item {
   }
   readonly property int historyCardHeight: contentMargin * 2 + historyColumn.implicitHeight
 
-  function activateSelected(action) { runAction(action, selectedEntry) }
 
   // Alt+N: the query, if any, becomes the new entry's name.
   function insertNew(action) {

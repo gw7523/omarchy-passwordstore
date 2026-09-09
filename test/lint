@@ -9,6 +9,9 @@
 # plugin folder on purpose — omarchy-plugin-validate refuses any symlink
 # inside one.
 #
+It also refuses a QML file that declares the same member twice in one scope,
+# which qmllint does not catch and which makes the type fail to load.
+#
 # Two warning classes are expected and are not defects:
 #
 #   missing-property on Style.* / Color.*
@@ -49,7 +52,16 @@ ln -sfn "$SHELL_ROOT" "$import_root/qs"
 
 status=0
 shopt -s nullglob
-for qml in "$PLUGIN_DIR"/*.qml "$PLUGIN_DIR"/pinentry/*.qml; do
+qml_files=("$PLUGIN_DIR"/*.qml "$PLUGIN_DIR"/pinentry/*.qml)
+
+# A member declared twice in one scope makes Quickshell refuse the whole type
+# at load ("Duplicate method name"), so the card stops opening with nothing on
+# screen to say why. qmllint does not report it and a merge is how it gets
+# written, so it is checked before qmllint runs.
+echo "qml-members (duplicate functions and properties)"
+"$TEST_DIR/qml-members" "${qml_files[@]}" || status=1
+
+for qml in "${qml_files[@]}"; do
   echo "qmllint ${qml#"$PLUGIN_DIR"/}"
   output=$("$QMLLINT" -I "$QML_ROOT" -I "$import_root" "$qml" 2>&1)
 

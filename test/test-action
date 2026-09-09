@@ -87,6 +87,14 @@ passed=0
 failed=0
 ok()  { printf '  ok    %s\n' "$1"; passed=$(( passed + 1 )); }
 bad() { printf '  FAIL  %s\n' "$1"; failed=$(( failed + 1 )); }
+# setsid detaches the process that writes the file, so the stub may not have
+# run yet when the assertion reads it.
+await_file() { # path
+  local i
+  for ((i = 0; i < 60; i++)); do [[ -s $1 ]] && return 0; sleep 0.05; done
+  return 1
+}
+
 reset() {
   rm -f "$work"/{pass.calls,clipboard,cleared,typed,notify.calls,recent,wlcopy.calls,inserted,xdg-open.calls,hyprctl.calls,aw.count,active.later,locked,layers,active}
   # Omarchy's clipboard history, as if an older wl-copy had let the password in.
@@ -241,9 +249,11 @@ reset
 [[ $? -eq 1 && ! -e $work/typed ]] && ok "autofill refuses a password with control characters" || bad "autofill refuses a password with control characters"
 reset
 "$ACTION" open-url web/site --quiet >/dev/null 2>&1
+await_file "$work/xdg-open.calls"
 [[ $(cat "$work/xdg-open.calls" 2>/dev/null) == "https://example.com" ]] && ok "open-url opens the url: line" || bad "open-url opens the url: line"
 reset
 "$ACTION" open-url site/bob --quiet >/dev/null 2>&1
+await_file "$work/xdg-open.calls"
 [[ $(cat "$work/xdg-open.calls" 2>/dev/null) == "https://example.com" ]] && ok "open-url takes the url: of an editor-format entry" || bad "open-url takes the url: of an editor-format entry"
 reset
 "$ACTION" open-url urls/notes --quiet >/dev/null 2>&1

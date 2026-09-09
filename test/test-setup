@@ -34,6 +34,18 @@ readonly ALICE=ABCDEF0123456789ABCDEF0123456789ABCDEF01   # secret key
 readonly BOB=FEDCBA9876543210FEDCBA9876543210FEDCBA98     # secret key, expired
 readonly CAROL=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA   # public key only
 
+# The suite runs on a seat where the real card may have a password on the
+# clipboard, counting down in a process named "passwordstore clip sleep".
+# `forget` looks for exactly that name and kills it, so pgrep and pkill are
+# confined to this test's own process group: the tests still prove the real
+# matching against a real sleeper they start themselves, and nothing outside
+# the run can be seen or killed. (Clobbering a live countdown is not
+# hypothetical: it happened once from a stray probe on this box.)
+test_pgid=$(ps -o pgid= -p $$ | tr -d ' ')
+for tool in pgrep pkill; do
+  printf '#!/bin/bash\nexec /usr/bin/%s -g %s "$@"\n' "$tool" "$test_pgid" > "$work/bin/$tool"
+done
+
 # The terminal hook: run the script here and now, no window.
 printf '#!/bin/bash\nexec "$@"\n' > "$work/bin/term"
 
