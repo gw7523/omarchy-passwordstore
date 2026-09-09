@@ -114,6 +114,25 @@ prefer:
 Either way the shared store is its own directory (`~/.password-store-shared`)
 and syncs on its own, usually through git.
 
+**Adding a seat** (a second machine of yours, or a teammate's) without a
+file ever leaving the room: on the new seat, Keys page, highlight its key
+and press `S` (`Send key to a seat`); the public key goes to LocalSend's
+device picker (LocalSend must be open and accepting on the vault's
+seat). There, `A` (`Add a seat's key`) imports the received file (the
+import page offers the newest key in the downloads folder) and shows its
+name and fingerprint. Read the fingerprint against the other seat's
+screen, group by group; `M` says they match, and only then is the key
+selected next to the store's own and the Store page opened, where
+`Enter` re-encrypts every entry for all of them. That reading is the
+trust decision: the re-encrypt asserts trust in the key (`--trust-model
+always`) instead of asking on a terminal the helper does not have, and
+checks that gpg can encrypt to every recipient before and after. A git
+vault pushes right after and says so; the new seat clones or pulls it
+and its key reads everything. A file holding more than one key, a
+private key, or an expired or revoked key is refused before it is
+imported; only public keys travel; `Esc` anywhere in the wizard drops the
+join.
+
 ### Sync backends
 
 | Backend | First-time setup | Afterwards |
@@ -413,7 +432,7 @@ hand:
   `~/.local/state/omarchy/clipboard-history.json` as a fallback. With
   `--sync --vault ID` the changes end with a push.
 - `passwordstore-setup <command> [...]` is the wizard's back end: `status`,
-  `gpg-list`, `gpg-generate`, `gpg-inspect`, `gpg-import` (`--delete` shreds the file afterwards), `gpg-export` (`--kind public|secret`, `--force`), `install`, `init`, `sync-status`,
+  `gpg-list`, `gpg-generate`, `gpg-inspect`, `gpg-import` (`--delete` shreds the file afterwards; `--one-key` refuses all but one usable public key), `gpg-export` (`--kind public|secret`, `--force`), `gpg-send` (the public key to LocalSend's picker), `install`, `init`, `sync-status`,
   `sync-setup`, `sync-pull`, `sync-push`, `pinentry`, `audit`, `bar-status`, `forget`, `history`, `restore`. JSON on stdout, settings read from
   the vault's record in `shell.json` when not given as options. Anything that
   may ask for a passphrase or a credential runs in a floating terminal that

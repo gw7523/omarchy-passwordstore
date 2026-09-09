@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Refuse a QML file that declares the same member twice in one scope.
+
+Quickshell rejects such a file at load time ("Duplicate method name") and the
+whole type goes unavailable: the card stops opening, the bar button stops
+responding, and nothing says why until the shell's journal is read. qmllint
+does not report it, and a merge that keeps both sides of a conflict is exactly
+how it gets written, so it is checked here.
+
+Braces are counted with strings, comments and regex literals removed. If the
+count does not return to zero the file was not understood, and that is a
+failure too: a check that quietly stops checking is worse than none.
+"""
+import re
+import sys
+
+FUNCTION = re.compile(r"\bfunction\s+([A-Za-z_]\w*)\s*\(")
+PROPERTY = re.compile(r"\b(?:readonly\s+)?property\s+(?:list\s*<[^>]*>|[\w.<>]+)\s+([A-Za-z_]\w*)")
+
+
+def strip(line, in_block):
+    """The line with comments, strings and regex literals blanked out."""
+    out, i, n = [], 0, len(line)
+    while i < n:
+        two = line[i:i + 2]
+        if in_block:
+            if two == "*/":
+                in_block = False
+                i += 2
+            else:
+                i += 1
+            continue
+        if two == "/*":
+            in_block = True
+            i += 2
+            continue
+        if two == "//":
+            break
+        ch = line[i]
+        if ch in "\"'`":
+            quote, i = ch, i + 1
+            while i < n:
+                if line[i] == "\\":
+                    i += 2
+                    continue
+                if line[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        # A regex literal, not division: only after a token that cannot end an
+        # expression. Its braces ({7}) are balanced, but its slashes are not.
+        if ch == "/" and re.search(r"[(,=:!&|?+\[{]\s*$", "".join(out)):
+            i += 1
+            while i < n:
+                if line[i] == "\\":
+                    i += 2
+                    continue
+                if line[i] == "/":
+                    i += 1
+                    break
+                i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out), in_block
+
+
+def check(path):
+    """Members and braces are walked in source order: a member written after
+    an opening brace on the same line belongs to the scope that brace made."""
+    problems, scopes, in_block = [], [{}], False
+    for number, raw in enumerate(open(path, encoding="utf-8"), 1):
+        line, in_block = strip(raw, in_block)
+        events = []
+        for pattern, kind in ((FUNCTION, "function"), (PROPERTY, "property")):
+            for match in pattern.finditer(line):
+                events.append((match.start(1), kind, match.group(1)))
+        for position, ch in enumerate(line):
+            if ch in "{}":
+                events.append((position, "brace", ch))
+        for _, kind, payload in sorted(events):
+            if kind == "brace":
+                if payload == "{":
+                    scopes.append({})
+                elif len(scopes) > 1:
+                    scopes.pop()
+                else:
+                    return [f"{path}:{number}: more closing braces than opening ones; "
+                            "this check could not read the file"]
+                continue
+            seen = scopes[-1].get(payload)
+            if seen:
+                problems.append(
+                    f"{path}:{number}: {kind} {payload} is already declared "
+                    f"in this scope at line {seen}")
+            else:
+                scopes[-1][payload] = number
+    if len(scopes) != 1:
+        return [f"{path}: braces do not balance ({len(scopes) - 1} left open); "
+                "this check could not read the file"]
+    return problems
+
+
+def main(paths):
+    problems = []
+    for path in paths:
+        problems += check(path)
+    for problem in problems:
+        print(problem)
+    print(f"  {'clean' if not problems else str(len(problems)) + ' duplicate members'}"
+          f" ({len(paths)} files)")
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
