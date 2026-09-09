@@ -76,6 +76,14 @@ live. Never install over a live `hegjon.passwordstore` checkout.
 
 - `escape` is a reserved word in QML; a `function escape()` in a component
   makes the whole type unavailable ("Illegal method name").
+- The same class, and the one a merge actually produces: a member declared
+  twice in one scope ("Duplicate method name") makes the type unavailable,
+  so the card stops opening and the bar button stops responding with
+  nothing on screen to say why — only `journalctl --user | grep -i
+  passwordstore` names it. qmllint does not report it. `test/lint` now runs
+  `test/qml-members` first, which refuses a duplicate function or property
+  in one scope. Keeping both sides of a conflict in
+  `PasswordstoreOverlay.qml` is how it got written.
 - An `IpcHandler` in the overlay segfaulted Quickshell
   (`IpcHandler::updateRegistration` during `onPostReload`) when a plugin
   hot-reload raced an `omarchy-restart-shell`. No first-party overlay has one;
@@ -103,6 +111,11 @@ live. Never install over a live `hegjon.passwordstore` checkout.
   becomes the name, and saving without edits keeps the path (an edit moves
   it to name/username). `--no-overwrite` guards a new name against an
   existing entry, since `pass insert -f` / `pass mv -f` would clobber it.
+- `test/test-setup` stubs `pgrep` and `pkill` to this test run's own process
+  group. `forget` looks for the clipboard sleeper by name and kills it, and
+  without the stubs the suite reaches the real seat: running the tests while
+  a password is on the clipboard would clear it. Any new helper that reads
+  the process table needs the same treatment.
 - The clipboard sleeper is named (`exec -a "passwordstore clip sleep"` around
   `sleep & wait`, because bash execs a lone command and loses the name) so
   the next copy can `pkill` it and restart the timer, as pass does.
