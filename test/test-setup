@@ -93,6 +93,11 @@ known() { # id, list of fingerprints/emails
 args=("$@")
 last=${args[-1]}
 case " $* " in
+  *" -e -o /dev/null "*)
+    # init asks gpg whether it could encrypt to each recipient before it
+    # rewrites anything: encryptable here means the keyring knows the key.
+    r=""; for ((i = 0; i < ${#args[@]}; i++)); do [[ ${args[i]} == -r ]] && r=${args[i+1]}; done
+    exec "$0" --batch --list-keys -- "$r" >/dev/null ;;
   *" --with-colons "*)
     case " $* " in
       *" --list-secret-keys "*) secret_colons ;;
