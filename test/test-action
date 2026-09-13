@@ -72,10 +72,12 @@ reset() {
 echo "passwordstore-action"
 
 reset
-start=$SECONDS
+start=$(date +%s%N)
 "$ACTION" copy-password web/site --recent "$work/recent" --clip-time 1 >/dev/null 2>&1
 [[ $? -eq 0 ]] && ok "copy-password exits 0" || bad "copy-password exits 0"
-[[ $(( SECONDS - start )) -lt 1 ]] && ok "copy-password returns without waiting for the clipboard sleeper" \
+# Milliseconds, not $SECONDS: a whole-second counter can tick between
+# the two readings and report a second that never passed.
+[[ $(( ( $(date +%s%N) - start ) / 1000000 )) -lt 900 ]] && ok "copy-password returns without waiting for the clipboard sleeper" \
   || bad "copy-password returns without waiting for the clipboard sleeper"
 [[ $(cat "$work/clipboard" 2>/dev/null) == "hunter2" ]] && ok "copy-password copies the first line alone" \
   || bad "copy-password copies the first line alone"
